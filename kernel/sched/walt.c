@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,6 +30,11 @@
 
 #include <trace/events/sched.h>
 
+#ifdef CONFIG_SEC_DEBUG_SUMMARY
+#include <linux/sec_debug.h>
+#include <linux/sec_debug_summary.h>
+#endif
+
 const char *task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
 				  "TASK_WAKE", "TASK_MIGRATE", "TASK_UPDATE",
 				"IRQ_UPDATE"};
@@ -52,21 +57,6 @@ u64 walt_load_reported_window;
 
 static struct irq_work walt_cpufreq_irq_work;
 static struct irq_work walt_migration_irq_work;
-
-void
-walt_fixup_cumulative_runnable_avg(struct rq *rq,
-				   struct task_struct *p, u64 new_task_load)
-{
-	s64 task_load_delta = (s64)new_task_load - task_load(p);
-	struct walt_sched_stats *stats = &rq->walt_stats;
-
-	stats->cumulative_runnable_avg += task_load_delta;
-	if ((s64)stats->cumulative_runnable_avg < 0)
-		panic("cra less than zero: tld: %lld, task_load(p) = %u\n",
-			task_load_delta, task_load(p));
-
-	walt_fixup_cum_window_demand(rq, task_load_delta);
-}
 
 u64 sched_ktime_clock(void)
 {
@@ -2127,6 +2117,17 @@ int num_clusters;
 
 struct list_head cluster_head;
 
+#ifdef CONFIG_SEC_DEBUG_SUMMARY
+void summary_set_lpm_info_cluster(struct sec_debug_summary_data_apss *apss)
+{
+	apss->aplpm.num_clusters = num_clusters;
+	pr_info("%s : 0x%llx\n", __func__, virt_to_phys((void *)sched_cluster));
+	pr_info("%s : offset 0x%lx\n", __func__, offsetof(struct sched_cluster, dstate));
+	apss->aplpm.p_cluster = virt_to_phys((void *)sched_cluster);
+	apss->aplpm.dstate_offset = offsetof(struct sched_cluster, dstate);
+}
+#endif
+
 static void
 insert_cluster(struct sched_cluster *cluster, struct list_head *head)
 {
@@ -2559,6 +2560,7 @@ static void transfer_busy_time(struct rq *rq, struct related_thread_group *grp,
  * Enable colocation and frequency aggregation for all threads in a process.
  * The children inherits the group id from the parent.
  */
+unsigned int __read_mostly sysctl_sched_enable_thread_grouping;
 
 /* Maximum allowed threshold before freq aggregation must be enabled */
 #define MAX_FREQ_AGGR_THRESH 1000
@@ -2852,25 +2854,34 @@ void add_new_task_to_grp(struct task_struct *new)
 {
 	unsigned long flags;
 	struct related_thread_group *grp;
+	struct task_struct *leader = new->group_leader;
+	unsigned int leader_grp_id = sched_get_group_id(leader);
 
-	/*
-	 * If the task does not belong to colocated schedtune
-	 * cgroup, nothing to do. We are checking this without
-	 * lock. Even if there is a race, it will be added
-	 * to the co-located cgroup via cgroup attach.
-	 */
-	if (!schedtune_task_colocated(new))
+	if (!sysctl_sched_enable_thread_grouping &&
+	    leader_grp_id != DEFAULT_CGROUP_COLOC_ID)
 		return;
 
-	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
+	if (thread_group_leader(new))
+		return;
+
+	if (leader_grp_id == DEFAULT_CGROUP_COLOC_ID) {
+		if (!same_schedtune(new, leader))
+			return;
+	}
+
 	write_lock_irqsave(&related_thread_group_lock, flags);
+
+	rcu_read_lock();
+	grp = task_related_thread_group(leader);
+	rcu_read_unlock();
 
 	/*
 	 * It's possible that someone already added the new task to the
-	 * group. or it might have taken out from the colocated schedtune
-	 * cgroup. check these conditions under lock.
+	 * group. A leader's thread group is updated prior to calling
+	 * this function. It's also possible that the leader has exited
+	 * the group. In either case, there is nothing else to do.
 	 */
-	if (!schedtune_task_colocated(new) || new->grp) {
+	if (!grp || new->grp) {
 		write_unlock_irqrestore(&related_thread_group_lock, flags);
 		return;
 	}

@@ -168,6 +168,11 @@ EXPORT_SYMBOL(drm_dp_bw_code_to_link_rate);
 
 #define AUX_RETRY_INTERVAL 500 /* us */
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+extern int secdp_get_hpd_status(void);
+extern bool secdp_get_cable_status(void);
+#endif
+
 /**
  * DOC: dp helpers
  *
@@ -195,6 +200,14 @@ static int drm_dp_dpcd_access(struct drm_dp_aux *aux, u8 request,
 
 	mutex_lock(&aux->hw_mutex);
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (/*!secdp_get_hpd_status() ||*/ !secdp_get_cable_status()) {
+		pr_info("[drm-dp] %s: cable is out-1\n", __func__);
+		ret = -EIO;
+		goto unlock;
+	}
+#endif
+
 	/*
 	 * The specification doesn't give any recommendation on how often to
 	 * retry native transactions. We used to retry 7 times like for
@@ -219,6 +232,13 @@ static int drm_dp_dpcd_access(struct drm_dp_aux *aux, u8 request,
 			} else
 				ret = -EIO;
 		}
+#ifdef CONFIG_SEC_DISPLAYPORT
+		if (/*!secdp_get_hpd_status() ||*/ !secdp_get_cable_status()) {
+			pr_info("[drm-dp] %s: cable is out-2\n", __func__);
+			ret = -EIO;
+			goto unlock;
+		}
+#endif
 
 		/*
 		 * We want the error we return to be the error we received on
@@ -300,6 +320,48 @@ ssize_t drm_dp_dpcd_write(struct drm_dp_aux *aux, unsigned int offset,
 }
 EXPORT_SYMBOL(drm_dp_dpcd_write);
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+static int drm_dp_i2c_access(struct drm_dp_aux *aux, int mode,
+				void *buffer, size_t size)
+{
+
+	struct i2c_adapter *adapter = &aux->ddc;
+	int ret, retries = 3;
+
+	do {
+		struct i2c_msg msgs = {
+			.addr	= 0x50,
+			.flags	= mode == DP_AUX_I2C_READ ? I2C_M_RD : 0,
+			.len	= size,
+			.buf	= buffer,
+		};
+
+		ret = i2c_transfer(adapter, &msgs, 1);
+
+		if (ret == -ENXIO) {
+			DRM_DEBUG_KMS("drm: skipping non-existent adapter %s\n",
+					adapter->name);
+			break;
+		}
+	} while (ret != 1 && --retries);
+
+	return (ret == 1) ? size : ret;
+}
+
+ssize_t drm_dp_i2c_read(struct drm_dp_aux *aux, void *buffer, size_t size)
+{
+	return drm_dp_i2c_access(aux, DP_AUX_I2C_READ, buffer,
+				  size);
+}
+EXPORT_SYMBOL(drm_dp_i2c_read);
+
+ssize_t drm_dp_i2c_write(struct drm_dp_aux *aux, void *buffer, size_t size)
+{
+	return drm_dp_i2c_access(aux, DP_AUX_I2C_WRITE, buffer,
+				  size);
+}
+EXPORT_SYMBOL(drm_dp_i2c_write);
+#endif
 /**
  * drm_dp_dpcd_read_link_status() - read DPCD link status (bytes 0x202-0x207)
  * @aux: DisplayPort AUX channel
@@ -361,6 +423,8 @@ int drm_dp_link_power_up(struct drm_dp_aux *aux, struct drm_dp_link *link)
 	u8 value = DP_SET_POWER_D0;
 	int err;
 
+	pr_debug("%s: +++\n", __func__);
+
 	/* DP_SET_POWER register is only available on DPCD v1.1 and later */
 	if (link->revision < 0x11)
 		return 0;
@@ -392,6 +456,8 @@ int drm_dp_link_power_down(struct drm_dp_aux *aux, struct drm_dp_link *link)
 	u8 value;
 	int err;
 
+	pr_debug("%s: +++\n", __func__);
+
 	/* DP_SET_POWER register is only available on DPCD v1.1 and later */
 	if (link->revision < 0x11)
 		return 0;
@@ -410,30 +476,6 @@ int drm_dp_link_power_down(struct drm_dp_aux *aux, struct drm_dp_link *link)
 	return 0;
 }
 EXPORT_SYMBOL(drm_dp_link_power_down);
-
-int drm_dp_link_power_down_aux_up(struct drm_dp_aux *aux,
-						struct drm_dp_link *link)
-{
-	u8 value;
-	int err;
-
-	if (link->revision < 0x11)
-		return 0;
-
-	err = drm_dp_dpcd_readb(aux, DP_SET_POWER, &value);
-	if (err < 0)
-		return err;
-
-	value &= ~DP_SET_POWER_MASK;
-	value |= DP_SET_POWER_D5;
-
-	err = drm_dp_dpcd_writeb(aux, DP_SET_POWER, value);
-	if (err < 0)
-		return err;
-
-	return 0;
-}
-EXPORT_SYMBOL(drm_dp_link_power_down_aux_up);
 
 /**
  * drm_dp_link_configure() - configure a DisplayPort link
@@ -1014,7 +1056,6 @@ static const struct i2c_lock_operations drm_dp_i2c_lock_ops = {
 void drm_dp_aux_init(struct drm_dp_aux *aux)
 {
 	mutex_init(&aux->hw_mutex);
-	mutex_init(&aux->cec.lock);
 
 	aux->ddc.algo = &drm_dp_i2c_algo;
 	aux->ddc.algo_data = aux;
@@ -1104,38 +1145,3 @@ int drm_dp_psr_setup_time(const u8 psr_cap[EDP_PSR_RECEIVER_CAP_SIZE])
 EXPORT_SYMBOL(drm_dp_psr_setup_time);
 
 #undef PSR_SETUP_TIME
-
-/**
- * drm_dp_read_desc - read sink/branch descriptor from DPCD
- * @aux: DisplayPort AUX channel
- * @desc: Device decriptor to fill from DPCD
- * @is_branch: true for branch devices, false for sink devices
- *
- * Read DPCD 0x400 (sink) or 0x500 (branch) into @desc. Also debug log the
- * identification.
- *
- * Returns 0 on success or a negative error code on failure.
- */
-int drm_dp_read_desc(struct drm_dp_aux *aux, struct drm_dp_desc *desc,
-		     bool is_branch)
-{
-	struct drm_dp_dpcd_ident *ident = &desc->ident;
-	unsigned int offset = is_branch ? DP_BRANCH_OUI : DP_SINK_OUI;
-	int ret, dev_id_len;
-
-	ret = drm_dp_dpcd_read(aux, offset, ident, sizeof(*ident));
-	if (ret < 0)
-		return ret;
-
-	dev_id_len = strnlen(ident->device_id, sizeof(ident->device_id));
-
-	DRM_DEBUG_KMS("DP %s: OUI %*phD dev-ID %*pE HW-rev %d.%d SW-rev %d.%d\n",
-		      is_branch ? "branch" : "sink",
-		      (int)sizeof(ident->oui), ident->oui,
-		      dev_id_len, ident->device_id,
-		      ident->hw_rev >> 4, ident->hw_rev & 0xf,
-		      ident->sw_major_rev, ident->sw_minor_rev);
-
-	return 0;
-}
-EXPORT_SYMBOL(drm_dp_read_desc);

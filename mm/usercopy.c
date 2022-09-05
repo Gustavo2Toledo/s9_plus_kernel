@@ -15,7 +15,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/mm.h>
-#include <linux/highmem.h>
 #include <linux/slab.h>
 #include <asm/sections.h>
 
@@ -141,7 +140,7 @@ static inline const char *check_page_span(const void *ptr, unsigned long n,
 #ifdef CONFIG_HARDENED_USERCOPY_PAGESPAN
 	const void *end = ptr + n - 1;
 	struct page *endpage;
-	bool is_reserved, is_cma;
+	bool is_reserved, is_cma_rbin;
 
 	/*
 	 * Sometimes the kernel data regions are not marked Reserved (see
@@ -182,15 +181,15 @@ static inline const char *check_page_span(const void *ptr, unsigned long n,
 	 * several independently allocated pages.
 	 */
 	is_reserved = PageReserved(page);
-	is_cma = is_migrate_cma_page(page);
-	if (!is_reserved && !is_cma)
+	is_cma_rbin = is_migrate_cma_rbin_page(page);
+	if (!is_reserved && !is_cma_rbin)
 		return "<spans multiple pages>";
 
 	for (ptr += PAGE_SIZE; ptr <= end; ptr += PAGE_SIZE) {
 		page = virt_to_head_page(ptr);
 		if (is_reserved && !PageReserved(page))
 			return "<spans Reserved and non-Reserved pages>";
-		if (is_cma && !is_migrate_cma_page(page))
+		if (is_cma_rbin && !is_migrate_cma_rbin_page(page))
 			return "<spans CMA and non-CMA pages>";
 	}
 #endif
@@ -217,12 +216,7 @@ static inline const char *check_heap_object(const void *ptr, unsigned long n,
 	if (!virt_addr_valid(ptr))
 		return NULL;
 
-	/*
-	 * When CONFIG_HIGHMEM=y, kmap_to_page() will give either the
-	 * highmem page or fallback to virt_to_page(). The following
-	 * is effectively a highmem-aware virt_to_head_page().
-	 */
-	page = compound_head(kmap_to_page((void *)ptr));
+	page = virt_to_head_page(ptr);
 
 	/* Check slab allocator for flags and size. */
 	if (PageSlab(page))

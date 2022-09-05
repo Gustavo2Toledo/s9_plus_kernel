@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018, 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -57,7 +57,25 @@
 #define MSM_VERSION_MINOR	2
 #define MSM_VERSION_PATCHLEVEL	0
 
-static DEFINE_MUTEX(msm_release_lock);
+static BLOCKING_NOTIFIER_HEAD(msm_drm_notifier_list);
+
+int msm_drm_register_notifier_client(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&msm_drm_notifier_list, nb);
+}
+EXPORT_SYMBOL(msm_drm_register_notifier_client);
+
+int msm_drm_unregister_notifier_client(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&msm_drm_notifier_list, nb);
+}
+EXPORT_SYMBOL(msm_drm_unregister_notifier_client);
+
+int __msm_drm_notifier_call_chain(unsigned long event, void *data)
+{
+	return blocking_notifier_call_chain(&msm_drm_notifier_list,
+					event, data);
+}
 
 static void msm_fb_output_poll_changed(struct drm_device *dev)
 {
@@ -279,7 +297,6 @@ static int msm_drm_uninit(struct device *dev)
 	drm_vblank_cleanup(ddev);
 
 	if (priv->registered) {
-		drm_client_dev_unregister(ddev);
 		drm_dev_unregister(ddev);
 		priv->registered = false;
 	}
@@ -529,14 +546,6 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 	if (ret)
 		goto fail;
 
-	if (!dev->dma_parms) {
-		dev->dma_parms = devm_kzalloc(dev, sizeof(*dev->dma_parms),
-					      GFP_KERNEL);
-		if (!dev->dma_parms)
-			return -ENOMEM;
-	}
-	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
-
 	switch (get_mdp_ver(pdev)) {
 	case KMS_MDP4:
 		kms = mdp4_kms_init(ddev);
@@ -575,6 +584,14 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 		}
 	}
 	ddev->mode_config.funcs = &mode_config_funcs;
+
+	/* Create vblank ctrl for each display */
+	for (i = 0; i < priv->num_crtcs; i++) {
+		kthread_init_work(&priv->vblank_ctrl[i].work,
+			vblank_ctrl_worker);
+		INIT_LIST_HEAD(&priv->vblank_ctrl[i].event_list);
+		spin_lock_init(&priv->vblank_ctrl[i].lock);
+	}
 
 	/**
 	 * this priority was found during empiric testing to have appropriate
@@ -1303,22 +1320,21 @@ static int msm_ioctl_register_event(struct drm_device *dev, void *data,
 		spin_lock_irqsave(&dev->event_lock, flag);
 		list_add_tail(&client->base.link, &priv->client_event_list);
 		spin_unlock_irqrestore(&dev->event_lock, flag);
-		return 0;
+ 		return 0;
 	}
-
-	ret = msm_register_event(dev, req_event, file, true);
-	if (ret) {
-		DRM_ERROR("failed to enable event %x object %x object id %d\n",
-			req_event->event, req_event->object_type,
+ 
+ 	ret = msm_register_event(dev, req_event, file, true);
+ 	if (ret) {
+ 		DRM_ERROR("failed to enable event %x object %x object id %d\n",
+ 			req_event->event, req_event->object_type,
 			req_event->object_id);
 		kfree(client);
 	} else {
 		/* Add current client to list */
-		spin_lock_irqsave(&dev->event_lock, flag);
+ 		spin_lock_irqsave(&dev->event_lock, flag);
 		list_add_tail(&client->base.link, &priv->client_event_list);
-		spin_unlock_irqrestore(&dev->event_lock, flag);
-	}
-
+ 		spin_unlock_irqrestore(&dev->event_lock, flag);
+ 	}
 	return ret;
 }
 
@@ -1422,27 +1438,14 @@ void msm_mode_object_event_notify(struct drm_mode_object *obj,
 
 static int msm_release(struct inode *inode, struct file *filp)
 {
-	struct drm_file *file_priv;
-	struct drm_minor *minor;
-	struct drm_device *dev;
-	struct msm_drm_private *priv;
+	struct drm_file *file_priv = filp->private_data;
+	struct drm_minor *minor = file_priv->minor;
+	struct drm_device *dev = minor->dev;
+	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_drm_event *node, *temp, *tmp_node;
 	u32 count;
 	unsigned long flags;
 	LIST_HEAD(tmp_head);
-	int ret = 0;
-
-	mutex_lock(&msm_release_lock);
-
-	file_priv = filp->private_data;
-	if (!file_priv) {
-		ret = -EINVAL;
-		goto end;
-	}
-
-	minor = file_priv->minor;
-	dev = minor->dev;
-	priv = dev->dev_private;
 
 	spin_lock_irqsave(&dev->event_lock, flags);
 	list_for_each_entry_safe(node, temp, &priv->client_event_list,
@@ -1470,11 +1473,7 @@ static int msm_release(struct inode *inode, struct file *filp)
 		kfree(node);
 	}
 
-	ret = drm_release(inode, filp);
-	filp->private_data = NULL;
-end:
-	mutex_unlock(&msm_release_lock);
-	return ret;
+	return drm_release(inode, filp);
 }
 
 /**

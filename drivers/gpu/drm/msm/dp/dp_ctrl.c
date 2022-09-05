@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,8 +18,13 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 
-#include "msm_kms.h"
 #include "dp_ctrl.h"
+#ifdef CONFIG_SEC_DISPLAYPORT
+#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
+#include <linux/displayport_bigdata.h>
+#endif
+#include "secdp.h"
+#endif
 
 #define DP_KHZ_TO_HZ 1000
 
@@ -67,6 +72,9 @@ struct dp_ctrl_private {
 	struct dp_power *power;
 	struct dp_parser *parser;
 	struct dp_catalog_ctrl *catalog;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	bool link_train_status;
+#endif
 
 	struct completion idle_comp;
 	struct completion video_comp;
@@ -136,6 +144,8 @@ static void dp_ctrl_push_idle(struct dp_ctrl *dp_ctrl)
 		return;
 	}
 
+	pr_debug("+++\n");
+
 	reinit_completion(&ctrl->idle_comp);
 	dp_ctrl_state_ctrl(ctrl, ST_PUSH_IDLE);
 
@@ -150,16 +160,11 @@ static void dp_ctrl_config_ctrl(struct dp_ctrl_private *ctrl)
 {
 	u32 config = 0, tbd;
 	u8 *dpcd = ctrl->panel->dpcd;
-	u32 out_format = ctrl->panel->pinfo.out_format;
+
+	pr_debug("+++\n");
 
 	config |= (2 << 13); /* Default-> LSCLK DIV: 1/4 LCLK  */
-
-	if (out_format & MSM_MODE_FLAG_COLOR_FORMAT_YCBCR420)
-		config |= (1 << 11); /* YUV420 */
-	else if (out_format & MSM_MODE_FLAG_COLOR_FORMAT_YCBCR422)
-		config |= (2 << 11); /* YUV422 */
-	else
-		config |= (0 << 11); /* RGB */
+	config |= (0 << 11); /* RGB */
 
 	/* Scrambler reset enable */
 	if (dpcd[DP_EDP_CONFIGURATION_CAP] & DP_ALTERNATE_SCRAMBLER_RESET_CAP)
@@ -186,25 +191,6 @@ static void dp_ctrl_config_ctrl(struct dp_ctrl_private *ctrl)
 	ctrl->catalog->config_ctrl(ctrl->catalog, config);
 }
 
-static void dp_ctrl_misc_ctrl(struct dp_ctrl_private *ctrl)
-{
-	u32 out_format = ctrl->panel->pinfo.out_format;
-	u32 yres = ctrl->panel->pinfo.v_active;
-	u32 cc, tb;
-
-	tb = ctrl->link->get_test_bits_depth(ctrl->link,
-		ctrl->panel->pinfo.bpp);
-	cc = ctrl->link->get_colorimetry_config(ctrl->link);
-	if (out_format == MSM_MODE_FLAG_COLOR_FORMAT_YCBCR422) {
-		cc |= (0x01 << 1); /* Set 4:2:2 Pixel Encoding */
-		cc |= BIT(3); /* Set YCbCr Colorimetry */
-		if (yres >= 720)
-			cc |= BIT(4); /* Set BT709 */
-	}
-
-	ctrl->catalog->config_misc(ctrl->catalog, cc, tb);
-}
-
 /**
  * dp_ctrl_configure_source_params() - configures DP transmitter source params
  * @ctrl: Display Port Driver data
@@ -214,13 +200,17 @@ static void dp_ctrl_misc_ctrl(struct dp_ctrl_private *ctrl)
  */
 static void dp_ctrl_configure_source_params(struct dp_ctrl_private *ctrl)
 {
+	u32 cc, tb;
 
 	ctrl->catalog->lane_mapping(ctrl->catalog);
 	ctrl->catalog->mainlink_ctrl(ctrl->catalog, true);
 
 	dp_ctrl_config_ctrl(ctrl);
-	dp_ctrl_misc_ctrl(ctrl);
 
+	tb = ctrl->link->get_test_bits_depth(ctrl->link,
+		ctrl->panel->pinfo.bpp);
+	cc = ctrl->link->get_colorimetry_config(ctrl->link);
+	ctrl->catalog->config_misc(ctrl->catalog, cc, tb);
 	ctrl->panel->timing_cfg(ctrl->panel);
 }
 
@@ -274,8 +264,7 @@ static void dp_ctrl_calc_tu_parameters(struct dp_ctrl_private *ctrl,
 {
 	u32 const multiplier = 1000000;
 	u64 pclk, lclk;
-	u32 bpp;
-	u8 ln_cnt;
+	u8 bpp, ln_cnt;
 	int run_idx = 0;
 	u32 lwidth, h_blank;
 	u32 fifo_empty = 0;
@@ -333,8 +322,6 @@ static void dp_ctrl_calc_tu_parameters(struct dp_ctrl_private *ctrl,
 	int min_hblank_tmp = 0;
 	bool extra_req_bytes_is_neg = false;
 	struct dp_panel_info *pinfo = &ctrl->panel->pinfo;
-	int div = 0;
-	u32 out_format = pinfo->out_format;
 
 	u8 dp_brute_force = 1;
 	u64 brute_force_threshold = 10;
@@ -343,26 +330,10 @@ static void dp_ctrl_calc_tu_parameters(struct dp_ctrl_private *ctrl,
 	ln_cnt =  ctrl->link->link_params.lane_count;
 
 	bpp = pinfo->bpp;
-	if (out_format == MSM_MODE_FLAG_COLOR_FORMAT_YCBCR422) {
-		switch (pinfo->bpp) {
-		case 24:
-			bpp = 16;
-			break;
-		case 30:
-			bpp = 20;
-			break;
-		default:
-			bpp = 16;
-			break;
-		};
-	} else if (out_format == MSM_MODE_FLAG_COLOR_FORMAT_YCBCR420) {
-		div = 1;
-	}
-
-	lwidth = pinfo->h_active >> div;
-	h_blank = (pinfo->h_back_porch + pinfo->h_front_porch +
-			pinfo->h_sync_width) >> div;
-	pclk = (pinfo->pixel_clk_khz * 1000) >> div;
+	lwidth = pinfo->h_active;
+	h_blank = pinfo->h_back_porch + pinfo->h_front_porch +
+				pinfo->h_sync_width;
+	pclk = pinfo->pixel_clk_khz * 1000;
 
 	boundary_moderation_en = 0;
 	upper_bdry_cnt = 0;
@@ -716,6 +687,9 @@ static void dp_ctrl_calc_tu_parameters(struct dp_ctrl_private *ctrl,
 	if (h_blank < (u32)min_hblank) {
 		pr_debug(" WARNING: run_idx=%d Programmed h_blank %d is smaller than the min_hblank %d supported.\n",
 					run_idx, h_blank, min_hblank);
+#if 0/*def CONFIG_SEC_DISPLAYPORT*/
+		ctrl->link_train_status = false;
+#endif
 	}
 
 	if (fifo_empty)	{
@@ -959,6 +933,10 @@ static int dp_ctrl_link_rate_down_shift(struct dp_ctrl_private *ctrl)
 
 	pr_debug("new bw code=0x%x\n", ctrl->link->link_params.bw_code);
 
+#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
+	secdp_bigdata_save_item(BD_CUR_LINK_RATE, ctrl->link->link_params.bw_code);
+#endif
+
 	return ret;
 }
 
@@ -1009,8 +987,9 @@ static int dp_ctrl_link_training_2(struct dp_ctrl_private *ctrl)
 			break;
 
 		if (drm_dp_channel_eq_ok(link_status,
-			ctrl->link->link_params.lane_count))
+			ctrl->link->link_params.lane_count)) {
 			break;
+		}
 
 		if (tries > maximum_retries) {
 			ret = -ETIMEDOUT;
@@ -1040,6 +1019,17 @@ static int dp_ctrl_link_train(struct dp_ctrl_private *ctrl)
 	int ret = 0;
 	u8 encoding = 0x1;
 	struct drm_dp_link link_info = {0};
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (!secdp_get_cable_status()) {
+		pr_info("cable is out\n");
+		return -EIO;
+	}
+
+	pr_debug("+++\n");
+
+	ctrl->link_train_status = false;
+#endif
 
 	ctrl->link->phy_params.p_level = 0;
 	ctrl->link->phy_params.v_level = 0;
@@ -1081,11 +1071,22 @@ static int dp_ctrl_link_train(struct dp_ctrl_private *ctrl)
 	pr_info("link training #2 successful\n");
 
 end:
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (!secdp_get_cable_status()) {
+		pr_info("cable is out <2>\n");
+		return -EIO;
+	}
+#endif
+
 	dp_ctrl_state_ctrl(ctrl, 0);
 	/* Make sure to clear the current pattern before starting a new one */
 	wmb();
 
 	dp_ctrl_clear_training_pattern(ctrl);
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (!ret)
+		ctrl->link_train_status = true;
+#endif
 	return ret;
 }
 
@@ -1093,6 +1094,8 @@ static int dp_ctrl_setup_main_link(struct dp_ctrl_private *ctrl, bool train)
 {
 	bool mainlink_ready = false;
 	int ret = 0;
+
+	pr_debug("+++\n");
 
 	ctrl->catalog->mainlink_ctrl(ctrl->catalog, true);
 
@@ -1110,8 +1113,23 @@ static int dp_ctrl_setup_main_link(struct dp_ctrl_private *ctrl, bool train)
 	ctrl->catalog->reset(ctrl->catalog);
 
 	ret = dp_ctrl_link_train(ctrl);
-	if (ret)
+	if (ret) {
+#ifdef CONFIG_SEC_DISPLAYPORT
+#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
+		secdp_bigdata_inc_error_cnt(ERR_LINK_TRAIN);
+#endif
+		if (!secdp_get_cable_status()) {
+			ret = 0;
+			goto send_video;
+		}
+
+		if (ctrl->link->link_params.bw_code == DP_LINK_BW_1_62) {
+			ret = 0;
+			goto send_video;
+		}
+#endif
 		goto end;
+	}
 
 send_video:
 	/*
@@ -1125,6 +1143,7 @@ send_video:
 	mainlink_ready = ctrl->catalog->mainlink_ready(ctrl->catalog);
 	pr_debug("mainlink %s\n", mainlink_ready ? "READY" : "NOT READY");
 end:
+	pr_debug("---\n");
 	return ret;
 }
 
@@ -1177,6 +1196,8 @@ static int dp_ctrl_host_init(struct dp_ctrl *dp_ctrl, bool flip, bool reset)
 	struct dp_ctrl_private *ctrl;
 	struct dp_catalog_ctrl *catalog;
 
+	pr_debug("+++\n");
+
 	if (!dp_ctrl) {
 		pr_err("Invalid input data\n");
 		return -EINVAL;
@@ -1207,6 +1228,8 @@ static void dp_ctrl_host_deinit(struct dp_ctrl *dp_ctrl)
 {
 	struct dp_ctrl_private *ctrl;
 
+	pr_debug("+++\n");
+
 	if (!dp_ctrl) {
 		pr_err("Invalid input data\n");
 		return;
@@ -1219,10 +1242,29 @@ static void dp_ctrl_host_deinit(struct dp_ctrl *dp_ctrl)
 	pr_debug("Host deinitialized successfully\n");
 }
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+static bool dp_ctrl_get_link_train_status(struct dp_ctrl *dp_ctrl)
+{
+	struct dp_ctrl_private *ctrl;
+
+	if (!dp_ctrl) {
+		pr_err("Invalid input data\n");
+		return -EINVAL;
+	}
+
+	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
+	pr_info("link_train_status: %s\n", ctrl->link_train_status ? "success": "failure");
+	return ctrl->link_train_status;
+}
+#endif
+
 static int dp_ctrl_link_maintenance(struct dp_ctrl *dp_ctrl)
 {
 	int ret = 0;
 	struct dp_ctrl_private *ctrl;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	bool clk_on = false;
+#endif
 
 	if (!dp_ctrl) {
 		pr_err("Invalid input data\n");
@@ -1243,9 +1285,19 @@ static int dp_ctrl_link_maintenance(struct dp_ctrl *dp_ctrl)
 	ctrl->dp_ctrl.push_idle(&ctrl->dp_ctrl);
 	ctrl->dp_ctrl.reset(&ctrl->dp_ctrl);
 
-	ctrl->pixel_rate = ctrl->panel->get_pixel_clk(ctrl->panel);
+	ctrl->pixel_rate = ctrl->panel->pinfo.pixel_clk_khz;
 
 	do {
+#ifdef CONFIG_SEC_DISPLAYPORT
+		if (!secdp_get_cable_status()) {
+			pr_info("cable is out\n");
+			if (clk_on)
+				dp_ctrl_disable_mainlink_clocks(ctrl);
+			ret = -EIO;
+			break;
+		}
+#endif
+
 		if (ret == -EAGAIN) {
 			/* try with lower link rate */
 			dp_ctrl_link_rate_down_shift(ctrl);
@@ -1262,18 +1314,22 @@ static int dp_ctrl_link_maintenance(struct dp_ctrl *dp_ctrl)
 		 * link maintenance.
 		 */
 		dp_ctrl_disable_mainlink_clocks(ctrl);
+#ifdef CONFIG_SEC_DISPLAYPORT
+		clk_on = false;
+#endif
 
 		ret = dp_ctrl_enable_mainlink_clocks(ctrl);
 		if (ret)
 			continue;
+#ifdef CONFIG_SEC_DISPLAYPORT
+		clk_on = true;
+#endif
 
 		dp_ctrl_configure_source_params(ctrl);
 
 		ctrl->catalog->config_msa(ctrl->catalog,
 			drm_dp_bw_code_to_link_rate(
-			ctrl->link->link_params.bw_code),
-			ctrl->pixel_rate,
-			ctrl->panel->pinfo.out_format);
+			ctrl->link->link_params.bw_code), ctrl->pixel_rate);
 
 		reinit_completion(&ctrl->idle_comp);
 
@@ -1389,6 +1445,74 @@ static void dp_ctrl_reset(struct dp_ctrl *dp_ctrl)
 	ctrl->catalog->reset(ctrl->catalog);
 }
 
+#ifdef SECDP_OPTIMAL_LINK_RATE
+/* DP testbox list */
+static char secdp_tbox[][14] = {
+	"UNIGRAF TE",
+	"UFG DPR-120",
+	"UCD-400 DP",
+	"AGILENT ATR",
+	"UFG DP SINK",
+};
+
+/** check if connected sink is testbox or not
+ * return true		if it's testbox
+ * return false		otherwise (real sink)
+ */
+static bool secdp_check_tbox(struct dp_ctrl_private *ctrl)
+{
+	struct dp_panel *panel;
+	int i, rc;
+	bool ret = false;
+
+	if (!ctrl || !ctrl->panel)
+		goto end;
+
+	panel = ctrl->panel;
+
+	for (i = 0; i < dim(secdp_tbox); i++) {
+		rc = strncmp(panel->monitor_name, secdp_tbox[i],
+				strlen(panel->monitor_name));
+		if (!rc) {
+			pr_info("<%s> detected!\n", panel->monitor_name);
+			ret = true;
+			goto end;
+		}
+	}
+
+	pr_info("real sink <%s>\n", panel->monitor_name);
+end:
+	return ret;
+}
+
+static u32 secdp_dp_gen_link_clk(struct dp_panel *dp_panel)
+{
+	u32 calc_link_rate = 540000;	/* default HBR2 */
+	u32 min_link_rate;
+
+	if (!dp_panel)
+		goto end;
+
+	min_link_rate = dp_panel->get_min_req_link_rate(dp_panel);
+
+	if (min_link_rate == 0)
+		pr_info("timing not found, set default\n");
+	else if (min_link_rate <= 162000)
+		calc_link_rate = 162000;
+	else if (min_link_rate <= 270000)
+		calc_link_rate = 270000;
+	else if (min_link_rate <= 540000)
+		calc_link_rate = 540000;
+	else
+		pr_err("too big!, set default\n");
+
+	pr_info("min_link_rate <%u>, calc_link_rate <%u>\n",
+		min_link_rate, calc_link_rate);
+end:
+	return calc_link_rate;
+}
+#endif
+
 static int dp_ctrl_on(struct dp_ctrl *dp_ctrl)
 {
 	int rc = 0;
@@ -1414,11 +1538,15 @@ static int dp_ctrl_on(struct dp_ctrl *dp_ctrl)
 		if (!ctrl->panel->pinfo.pixel_clk_khz)
 			ctrl->pixel_rate = phy_cts_pixel_clk_khz;
 	} else {
+#ifdef SECDP_OPTIMAL_LINK_RATE
+		if (!secdp_check_tbox(ctrl))
+			rate = secdp_dp_gen_link_clk(ctrl->panel);
+#endif
 		ctrl->link->link_params.bw_code =
 			drm_dp_link_rate_to_bw_code(rate);
 		ctrl->link->link_params.lane_count =
 			ctrl->panel->link_info.num_lanes;
-		ctrl->pixel_rate = ctrl->panel->get_pixel_clk(ctrl->panel);
+		ctrl->pixel_rate = ctrl->panel->pinfo.pixel_clk_khz;
 	}
 
 	pr_debug("bw_code=%d, lane_count=%d, pixel_rate=%d\n",
@@ -1439,12 +1567,18 @@ static int dp_ctrl_on(struct dp_ctrl *dp_ctrl)
 	while (--link_train_max_retries && !atomic_read(&ctrl->aborted)) {
 		ctrl->catalog->config_msa(ctrl->catalog,
 			drm_dp_bw_code_to_link_rate(
-			ctrl->link->link_params.bw_code),
-			ctrl->pixel_rate, ctrl->panel->pinfo.out_format);
+			ctrl->link->link_params.bw_code), ctrl->pixel_rate);
 
 		rc = dp_ctrl_setup_main_link(ctrl, true);
 		if (!rc)
 			break;
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+		if (/*!secdp_get_hpd_status() ||*/ !secdp_get_cable_status()) {
+			pr_info("hpd_low or cable lost\n");
+			link_train_max_retries = 2;
+		}
+#endif
 
 		/* try with lower link rate */
 		dp_ctrl_link_rate_down_shift(ctrl);
@@ -1452,6 +1586,14 @@ static int dp_ctrl_on(struct dp_ctrl *dp_ctrl)
 		ctrl->catalog->mainlink_ctrl(ctrl->catalog, false);
 
 		dp_ctrl_disable_mainlink_clocks(ctrl);
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+		if (/*!secdp_get_hpd_status() ||*/ !secdp_get_cable_status()) {
+			pr_info("hpd_low or cable lost, skip to enable clk\n");
+			link_train_max_retries = 2;
+		}
+#endif
+
 		/* hw recommended delay before re-enabling clocks */
 		msleep(20);
 
@@ -1551,6 +1693,9 @@ struct dp_ctrl *dp_ctrl_get(struct dp_ctrl_in *in)
 	dp_ctrl->reset	   = dp_ctrl_reset;
 	dp_ctrl->link_maintenance = dp_ctrl_link_maintenance;
 	dp_ctrl->process_phy_test_request = dp_ctrl_process_phy_test_request;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	dp_ctrl->get_link_train_status = dp_ctrl_get_link_train_status;
+#endif
 
 	return dp_ctrl;
 error:

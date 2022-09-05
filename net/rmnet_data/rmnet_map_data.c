@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2020 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -650,6 +650,7 @@ static void rmnet_map_fill_ipv6_packet_ul_checksum_header
 		ul_header->udp_ind = 1;
 	else
 		ul_header->udp_ind = 0;
+
 	/* Changing checksum_insert_offset to network order */
 	hdr++;
 	*hdr = htons(*hdr);

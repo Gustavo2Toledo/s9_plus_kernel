@@ -282,6 +282,7 @@ static void xhci_handle_stopped_cmd_ring(struct xhci_hcd *xhci,
 	struct xhci_command *i_cmd;
 	u32 cycle_state;
 
+	xhci_info(xhci, "%s \n", __func__);
 	/* Turn all aborted commands in list to no-ops, then restart */
 	list_for_each_entry(i_cmd, &xhci->cmd_list, cmd_list) {
 
@@ -290,7 +291,7 @@ static void xhci_handle_stopped_cmd_ring(struct xhci_hcd *xhci,
 
 		i_cmd->status = COMP_CMD_STOP;
 
-		xhci_dbg(xhci, "Turn aborted command %pK to no-op\n",
+		xhci_info(xhci, "Turn aborted command %pK to no-op\n",
 			 i_cmd->command_trb);
 		/* get cycle state from the original cmd trb */
 		cycle_state = le32_to_cpu(
@@ -325,7 +326,7 @@ static int xhci_abort_cmd_ring(struct xhci_hcd *xhci, unsigned long flags)
 	u64 temp_64;
 	int ret;
 
-	xhci_dbg(xhci, "Abort command ring\n");
+	xhci_info(xhci, "Abort command ring\n");
 
 	reinit_completion(&xhci->cmd_ring_stop_completion);
 
@@ -333,20 +334,25 @@ static int xhci_abort_cmd_ring(struct xhci_hcd *xhci, unsigned long flags)
 	xhci_write_64(xhci, temp_64 | CMD_RING_ABORT,
 			&xhci->op_regs->cmd_ring);
 
-	/* Section 4.6.1.2 of xHCI 1.0 spec says software should
-	 * time the completion of all xHCI commands, including
-	 * the Command Abort operation. If software doesn't see
-	 * CRR negated in a timely manner, then it should assume
-	 * that the there are larger problems with the xHC and assert HCRST.
+	/* Section 4.6.1.2 of xHCI 1.0 spec says software should also time the
+	 * completion of the Command Abort operation. If CRR is not negated in a
+	 * timely manner then driver handles it as if host died (-ENODEV).
+	 * In the future we should distinguish between -ENODEV and -ETIMEDOUT
+	 * and try to recover a -ETIMEDOUT with a host controller reset.
 	 */
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+	spin_unlock_irqrestore(&xhci->lock, flags);
+#endif
 	ret = xhci_handshake_check_state(xhci, &xhci->op_regs->cmd_ring,
-			CMD_RING_RUNNING, 0, 1000 * 1000);
+			CMD_RING_RUNNING, 0, 5 * 100 * 1000);
 	if (ret < 0) {
-		xhci_err(xhci,
-			 "Stop command ring failed, maybe the host is dead\n");
-		xhci->xhc_state |= XHCI_STATE_DYING;
+		xhci_err(xhci, "Abort failed to stop command ring: %d\n", ret);
 		xhci_halt(xhci);
-		return -ESHUTDOWN;
+		xhci_hc_died(xhci);
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+		spin_lock_irqsave(&xhci->lock, flags);
+#endif
+		return ret;
 	}
 	/*
 	 * Writing the CMD_RING_ABORT bit should cause a cmd completion event,
@@ -354,13 +360,22 @@ static int xhci_abort_cmd_ring(struct xhci_hcd *xhci, unsigned long flags)
 	 * but the completion event in never sent. Wait 2 secs (arbitrary
 	 * number) to handle those cases after negation of CMD_RING_RUNNING.
 	 */
+#if !defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
 	spin_unlock_irqrestore(&xhci->lock, flags);
+#endif
 	ret = wait_for_completion_timeout(&xhci->cmd_ring_stop_completion,
 					  msecs_to_jiffies(2000));
 	spin_lock_irqsave(&xhci->lock, flags);
 	if (!ret) {
-		xhci_dbg(xhci, "No stop event for abort, ring start fail?\n");
+		xhci_info(xhci, "No stop event for abort, ring start fail?\n");
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+		cancel_delayed_work(&xhci->cmd_timer);
+#endif
 		xhci_cleanup_command_queue(xhci);
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+		xhci->current_cmd = NULL;
+#endif
+		xhci_info(xhci, "xhci->xhc_state 0x%x\n", xhci->xhc_state);
 	} else {
 		xhci_handle_stopped_cmd_ring(xhci, xhci_next_queued_cmd(xhci));
 	}
@@ -882,6 +897,40 @@ static void xhci_kill_endpoint_urbs(struct xhci_hcd *xhci,
 	}
 }
 
+/*
+ * host controller died, register read returns 0xffffffff
+ * Complete pending commands, mark them ABORTED.
+ * URBs need to be given back as usb core might be waiting with device locks
+ * held for the URBs to finish during device disconnect, blocking host remove.
+ *
+ * Call with xhci->lock held.
+ * lock is relased and re-acquired while giving back urb.
+ */
+void xhci_hc_died(struct xhci_hcd *xhci)
+{
+	int i, j;
+
+	if (xhci->xhc_state & XHCI_STATE_DYING)
+		return;
+
+	xhci_err(xhci, "xHCI host controller not responding, assume dead\n");
+	xhci->xhc_state |= XHCI_STATE_DYING;
+
+	xhci_cleanup_command_queue(xhci);
+
+	/* return any pending urbs, remove may be waiting for them */
+	for (i = 0; i <= HCS_MAX_SLOTS(xhci->hcs_params1); i++) {
+		if (!xhci->devs[i])
+			continue;
+		for (j = 0; j < 31; j++)
+			xhci_kill_endpoint_urbs(xhci, i, j);
+	}
+
+	/* inform usb core hc died if PCI remove isn't already handling it */
+	if (!(xhci->xhc_state & XHCI_STATE_REMOVING))
+		usb_hc_died(xhci_to_hcd(xhci));
+}
+
 /* Watchdog timer function for when a stop endpoint command fails to complete.
  * In this case, we assume the host controller is broken or dying or dead.  The
  * host may still be completing some other events, so we have to be careful to
@@ -905,7 +954,6 @@ void xhci_stop_endpoint_command_watchdog(unsigned long arg)
 {
 	struct xhci_hcd *xhci;
 	struct xhci_virt_ep *ep;
-	int ret, i, j;
 	unsigned long flags;
 
 	ep = (struct xhci_virt_ep *) arg;
@@ -923,48 +971,21 @@ void xhci_stop_endpoint_command_watchdog(unsigned long arg)
 	}
 
 	xhci_warn(xhci, "xHCI host not responding to stop endpoint command.\n");
-	xhci_warn(xhci, "Assuming host is dying, halting host.\n");
-	/* Oops, HC is dead or dying or at least not responding to the stop
-	 * endpoint command.
+	ep->ep_state &= ~EP_HALT_PENDING;
+
+	xhci_halt(xhci);
+
+	/*
+	 * handle a stop endpoint cmd timeout as if host died (-ENODEV).
+	 * In the future we could distinguish between -ENODEV and -ETIMEDOUT
+	 * and try to recover a -ETIMEDOUT with a host controller reset
 	 */
-	xhci->xhc_state |= XHCI_STATE_DYING;
-	/* Disable interrupts from the host controller and start halting it */
-	xhci_quiesce(xhci);
-	spin_unlock_irqrestore(&xhci->lock, flags);
+	xhci_hc_died(xhci);
 
-	ret = xhci_halt(xhci);
-
-	spin_lock_irqsave(&xhci->lock, flags);
-	if (ret < 0) {
-		/* This is bad; the host is not responding to commands and it's
-		 * not allowing itself to be halted.  At least interrupts are
-		 * disabled. If we call usb_hc_died(), it will attempt to
-		 * disconnect all device drivers under this host.  Those
-		 * disconnect() methods will wait for all URBs to be unlinked,
-		 * so we must complete them.
-		 */
-		xhci_warn(xhci, "Non-responsive xHCI host is not halting.\n");
-		xhci_warn(xhci, "Completing active URBs anyway.\n");
-		/* We could turn all TDs on the rings to no-ops.  This won't
-		 * help if the host has cached part of the ring, and is slow if
-		 * we want to preserve the cycle bit.  Skip it and hope the host
-		 * doesn't touch the memory.
-		 */
-	}
-	for (i = 0; i < MAX_HC_SLOTS; i++) {
-		if (!xhci->devs[i])
-			continue;
-		for (j = 0; j < 31; j++)
-			xhci_kill_endpoint_urbs(xhci, i, j);
-	}
 	spin_unlock_irqrestore(&xhci->lock, flags);
-	xhci_dbg_trace(xhci, trace_xhci_dbg_cancel_urb,
-			"Calling usb_hc_died()");
-	usb_hc_died(xhci_to_hcd(xhci));
 	xhci_dbg_trace(xhci, trace_xhci_dbg_cancel_urb,
 			"xHCI host controller is dead.");
 }
-
 
 static void update_ring_for_set_deq_completion(struct xhci_hcd *xhci,
 		struct xhci_virt_device *dev,
@@ -1267,7 +1288,6 @@ void xhci_cleanup_command_queue(struct xhci_hcd *xhci)
 void xhci_handle_command_timeout(struct work_struct *work)
 {
 	struct xhci_hcd *xhci;
-	int ret;
 	unsigned long flags;
 	u64 hw_ring_state;
 
@@ -1288,22 +1308,17 @@ void xhci_handle_command_timeout(struct work_struct *work)
 
 	/* Make sure command ring is running before aborting it */
 	hw_ring_state = xhci_read_64(xhci, &xhci->op_regs->cmd_ring);
+	if (hw_ring_state == ~(u64)0) {
+		xhci_hc_died(xhci);
+		goto time_out_completed;
+	}
+
 	if ((xhci->cmd_ring_state & CMD_RING_STATE_RUNNING) &&
 	    (hw_ring_state & CMD_RING_RUNNING))  {
 		/* Prevent new doorbell, and start command abort */
 		xhci->cmd_ring_state = CMD_RING_STATE_ABORTED;
 		xhci_dbg(xhci, "Command timeout\n");
-		ret = xhci_abort_cmd_ring(xhci, flags);
-		if (unlikely(ret == -ESHUTDOWN)) {
-			xhci_err(xhci, "Abort command ring failed\n");
-			xhci_cleanup_command_queue(xhci);
-			spin_unlock_irqrestore(&xhci->lock, flags);
-			usb_hc_died(xhci_to_hcd(xhci)->primary_hcd);
-			xhci_dbg(xhci, "xHCI host controller is dead.\n");
-
-			return;
-		}
-
+		xhci_abort_cmd_ring(xhci, flags);
 		goto time_out_completed;
 	}
 
@@ -1599,6 +1614,9 @@ static void handle_port_status(struct xhci_hcd *xhci,
 		usb_hcd_resume_root_hub(hcd);
 	}
 
+	if (hcd->speed >= HCD_USB3 && (temp & PORT_PLS_MASK) == XDEV_INACTIVE)
+		bus_state->port_remote_wakeup &= ~(1 << faked_port_index);
+
 	if ((temp & PORT_PLC) && (temp & PORT_PLS_MASK) == XDEV_RESUME) {
 		xhci_dbg(xhci, "port resume event for port %d\n", port_id);
 
@@ -1617,7 +1635,6 @@ static void handle_port_status(struct xhci_hcd *xhci,
 			bus_state->port_remote_wakeup |= 1 << faked_port_index;
 			xhci_test_and_clear_bit(xhci, port_array,
 					faked_port_index, PORT_PLC);
-			usb_hcd_start_port_resume(&hcd->self, faked_port_index);
 			xhci_set_link_state(xhci, port_array, faked_port_index,
 						XDEV_U0);
 			/* Need to wait until the next link state change
@@ -1655,6 +1672,8 @@ static void handle_port_status(struct xhci_hcd *xhci,
 		if (slot_id && xhci->devs[slot_id])
 			xhci_ring_device(xhci, slot_id);
 		if (bus_state->port_remote_wakeup & (1 << faked_port_index)) {
+			bus_state->port_remote_wakeup &=
+				~(1 << faked_port_index);
 			xhci_test_and_clear_bit(xhci, port_array,
 					faked_port_index, PORT_PLC);
 			usb_wakeup_notification(hcd->self.root_hub,
@@ -2741,8 +2760,10 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 	spin_lock(&xhci->lock);
 	/* Check if the xHC generated the interrupt, or the irq is shared */
 	status = readl(&xhci->op_regs->status);
-	if (status == 0xffffffff)
+	if (status == ~(u32)0) {
+		xhci_hc_died(xhci);
 		goto hw_died;
+	}
 
 	if (!(status & STS_EINT)) {
 		spin_unlock(&xhci->lock);
@@ -3186,10 +3207,10 @@ static int xhci_align_td(struct xhci_hcd *xhci, struct urb *urb, u32 enqd_len,
 	if (usb_urb_dir_out(urb)) {
 		len = sg_pcopy_to_buffer(urb->sg, urb->num_sgs,
 				   seg->bounce_buf, new_buff_len, enqd_len);
-		if (len != new_buff_len)
+		if (len != seg->bounce_len)
 			xhci_warn(xhci,
 				"WARN Wrong bounce buffer write length: %zu != %d\n",
-				len, new_buff_len);
+				len, seg->bounce_len);
 		seg->bounce_dma = dma_map_single(dev, seg->bounce_buf,
 						 max_pkt, DMA_TO_DEVICE);
 	} else {
@@ -3337,8 +3358,8 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 			/* New sg entry */
 			--num_sgs;
 			sent_len -= block_len;
-			sg = sg_next(sg);
-			if (num_sgs != 0 && sg) {
+			if (num_sgs != 0) {
+				sg = sg_next(sg);
 				block_len = sg_dma_len(sg);
 				addr = (u64) sg_dma_address(sg);
 				addr += sent_len;

@@ -407,8 +407,6 @@ const u8 *cfg80211_find_ie_match(u8 eid, const u8 *ies, int len,
 				 const u8 *match, int match_len,
 				 int match_offset)
 {
-	const struct element *elem;
-
 	/* match_offset can't be smaller than 2, unless match_len is
 	 * zero, in which case match_offset must be zero as well.
 	 */
@@ -416,10 +414,14 @@ const u8 *cfg80211_find_ie_match(u8 eid, const u8 *ies, int len,
 		    (!match_len && match_offset)))
 		return NULL;
 
-	for_each_element_id(elem, eid, ies, len) {
-		if (elem->datalen >= match_offset - 2 + match_len &&
-		    !memcmp(elem->data + match_offset - 2, match, match_len))
-			return (void *)elem;
+	while (len >= 2 && len >= ies[1] + 2) {
+		if ((ies[0] == eid) &&
+		    (ies[1] + 2 >= match_offset + match_len) &&
+		    !memcmp(ies + match_offset, match, match_len))
+			return ies;
+
+		len -= ies[1] + 2;
+		ies += ies[1] + 2;
 	}
 
 	return NULL;
@@ -489,9 +491,19 @@ static int cmp_bss(struct cfg80211_bss *a,
 	const u8 *ie1 = NULL;
 	const u8 *ie2 = NULL;
 	int i, r;
-
+	#if !(defined(CONFIG_BCM4335) || defined(CONFIG_BCM4335_MODULE) \
+	|| defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
+	|| defined(CONFIG_BCM43438) || defined(CONFIG_BCM43438_MODULE) \
+	|| defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) \
+	|| defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) \
+	|| defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
+	|| defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
+	|| defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)\
+	|| defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE)\
+	|| defined(CONFIG_BCM4361) || defined(CONFIG_BCM4361_MODULE))
 	if (a->channel != b->channel)
 		return b->channel->center_freq - a->channel->center_freq;
+	#endif /* CONFIG_BCM43xx */
 
 	a_ies = rcu_access_pointer(a->ies);
 	if (!a_ies)
@@ -530,6 +542,20 @@ static int cmp_bss(struct cfg80211_bss *a,
 	r = memcmp(a->bssid, b->bssid, sizeof(a->bssid));
 	if (r)
 		return r;
+
+	#if (defined(CONFIG_BCM4335) || defined(CONFIG_BCM4335_MODULE) \
+	|| defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
+	|| defined(CONFIG_BCM43438) || defined(CONFIG_BCM43438_MODULE) \
+	|| defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) \
+	|| defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) \
+	|| defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
+	|| defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
+	|| defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)\
+	|| defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE)\
+	|| defined(CONFIG_BCM4361) || defined(CONFIG_BCM4361_MODULE))
+	if (a->channel != b->channel)
+		return b->channel->center_freq - a->channel->center_freq;
+	#endif /* CONFIG_BCM43xx */
 
 	ie1 = cfg80211_find_ie(WLAN_EID_SSID, a_ies->data, a_ies->len);
 	ie2 = cfg80211_find_ie(WLAN_EID_SSID, b_ies->data, b_ies->len);

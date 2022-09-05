@@ -264,6 +264,7 @@ struct btrfs_super_block {
 	 BTRFS_FEATURE_INCOMPAT_MIXED_GROUPS |		\
 	 BTRFS_FEATURE_INCOMPAT_BIG_METADATA |		\
 	 BTRFS_FEATURE_INCOMPAT_COMPRESS_LZO |		\
+	 BTRFS_FEATURE_INCOMPAT_COMPRESS_ZSTD |		\
 	 BTRFS_FEATURE_INCOMPAT_RAID56 |		\
 	 BTRFS_FEATURE_INCOMPAT_EXTENDED_IREF |		\
 	 BTRFS_FEATURE_INCOMPAT_SKINNY_METADATA |	\
@@ -851,12 +852,14 @@ struct btrfs_fs_info {
 	struct list_head delayed_iputs;
 	struct mutex cleaner_delayed_iput_mutex;
 
+	/* this protects tree_mod_seq_list */
+	spinlock_t tree_mod_seq_lock;
 	atomic64_t tree_mod_seq;
+	struct list_head tree_mod_seq_list;
 
-	/* this protects tree_mod_log and tree_mod_seq_list */
+	/* this protects tree_mod_log */
 	rwlock_t tree_mod_log_lock;
 	struct rb_root tree_mod_log;
-	struct list_head tree_mod_seq_list;
 
 	atomic_t nr_async_submits;
 	atomic_t async_submit_draining;

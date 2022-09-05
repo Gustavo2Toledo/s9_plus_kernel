@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,7 +28,6 @@ enum dp_lane_count {
 	DP_LANE_COUNT_4	= 4,
 };
 
-
 #define DP_MAX_DOWNSTREAM_PORTS 0x10
 
 struct dp_panel_info {
@@ -46,14 +45,11 @@ struct dp_panel_info {
 	u32 refresh_rate;
 	u32 pixel_clk_khz;
 	u32 bpp;
-	u32 out_format;
-	enum hdmi_picture_aspect par;
 };
 
 struct dp_display_mode {
 	struct dp_panel_info timing;
 	u32 capabilities;
-	u32 flags;
 };
 
 struct dp_panel_in {
@@ -61,6 +57,10 @@ struct dp_panel_in {
 	struct dp_aux *aux;
 	struct dp_link *link;
 	struct dp_catalog_panel *catalog;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	struct drm_connector *connector;
+	struct dp_parser *parser;
+#endif
 };
 
 struct dp_panel {
@@ -80,6 +80,15 @@ struct dp_panel {
 	/* debug */
 	u32 max_bw_code;
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+	u8 monitor_name[14];
+	u32 dsp_type;
+	struct dp_panel_info max_timing_info;
+
+	/* DRM connector assosiated with this panel */
+	struct drm_connector *connector;
+#endif
+
 	int (*init)(struct dp_panel *dp_panel);
 	int (*deinit)(struct dp_panel *dp_panel);
 	int (*timing_cfg)(struct dp_panel *dp_panel);
@@ -91,15 +100,13 @@ struct dp_panel {
 	int (*get_modes)(struct dp_panel *dp_panel,
 		struct drm_connector *connector, struct dp_display_mode *mode);
 	void (*handle_sink_request)(struct dp_panel *dp_panel);
-	int (*set_edid)(struct dp_panel *dp_panel, u8 *edid, size_t edid_size);
+	int (*set_edid)(struct dp_panel *dp_panel, u8 *edid);
 	int (*set_dpcd)(struct dp_panel *dp_panel, u8 *dpcd);
 	int (*setup_hdr)(struct dp_panel *dp_panel,
 		struct drm_msm_ext_hdr_metadata *hdr_meta);
 	void (*tpg_config)(struct dp_panel *dp_panel, bool enable);
 	int (*spd_config)(struct dp_panel *dp_panel);
 	bool (*hdr_supported)(struct dp_panel *dp_panel);
-	bool (*vsc_sdp_supported)(struct dp_panel *dp_panel);
-	u32 (*get_pixel_clk)(struct dp_panel *dp_panel);
 };
 
 /**

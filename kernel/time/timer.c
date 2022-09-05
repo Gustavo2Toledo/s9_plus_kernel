@@ -51,6 +51,8 @@
 
 #include "tick-internal.h"
 
+#include <linux/sec_debug.h>
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/timer.h>
 
@@ -1296,7 +1298,10 @@ static void call_timer_fn(struct timer_list *timer, void (*fn)(unsigned long),
 	lock_map_acquire(&lockdep_map);
 
 	trace_timer_expire_entry(timer);
+
+	secdbg_msg("timer %pS entry", fn);
 	fn(data);
+	secdbg_msg("timer %pS exit", fn);
 	trace_timer_expire_exit(timer);
 
 	lock_map_release(&lockdep_map);
@@ -1324,6 +1329,7 @@ static void expire_timers(struct timer_base *base, struct hlist_head *head)
 		timer = hlist_entry(head->first, struct timer_list, entry);
 
 		base->running_timer = timer;
+		BUG_ON(!timer->function);
 		detach_timer(timer, true);
 
 		fn = timer->function;
@@ -1596,23 +1602,21 @@ void timer_clear_idle(void)
 static int collect_expired_timers(struct timer_base *base,
 				  struct hlist_head *heads)
 {
-	unsigned long now = READ_ONCE(jiffies);
-
 	/*
 	 * NOHZ optimization. After a long idle sleep we need to forward the
 	 * base to current jiffies. Avoid a loop by searching the bitfield for
 	 * the next expiring timer.
 	 */
-	if ((long)(now - base->clk) > 2) {
+	if ((long)(jiffies - base->clk) > 2) {
 		unsigned long next = __next_timer_interrupt(base);
 
 		/*
 		 * If the next timer is ahead of time forward to current
 		 * jiffies, otherwise forward to the next expiry time:
 		 */
-		if (time_after(next, now)) {
+		if (time_after(next, jiffies)) {
 			/* The call site will increment clock! */
-			base->clk = now - 1;
+			base->clk = jiffies - 1;
 			return 0;
 		}
 		base->clk = next;

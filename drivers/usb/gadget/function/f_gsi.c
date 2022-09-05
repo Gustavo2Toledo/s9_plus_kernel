@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2019, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -13,6 +13,9 @@
 
 #include "f_gsi.h"
 #include "rndis.h"
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+#include <linux/sec_param.h>
+#endif
 
 struct usb_gsi_debugfs {
 	struct dentry *debugfs_root;
@@ -73,7 +76,6 @@ static int gsi_alloc_trb_buffer(struct f_gsi *gsi);
 static void gsi_free_trb_buffer(struct f_gsi *gsi);
 static struct gsi_ctrl_pkt *gsi_ctrl_pkt_alloc(unsigned int len, gfp_t flags);
 static void gsi_ctrl_pkt_free(struct gsi_ctrl_pkt *pkt);
-static int gsi_ctrl_send_cpkt_tomodem(struct f_gsi *gsi, void *buf, size_t len);
 
 static inline bool is_ext_prot_ether(int prot_id)
 {
@@ -536,6 +538,7 @@ static int ipa_connect_channels(struct gsi_data_port *d_port)
 {
 	int ret;
 	struct f_gsi *gsi = d_port_to_gsi(d_port);
+	struct f_gsi *gsi_rmnet_v2x = __gsi[USB_PROT_RMNET_V2X_IPA];
 	struct ipa_usb_xdci_chan_params *in_params =
 				&d_port->ipa_in_channel_params;
 	struct ipa_usb_xdci_chan_params *out_params =
@@ -665,16 +668,19 @@ static int ipa_connect_channels(struct gsi_data_port *d_port)
 	}
 
 	/*
-	 * Set 'is_sw_path' flag to true for functions using normal EPs so that
-	 * IPA can ignore the dummy address for GEVENTCOUNT register.
+	 * When both RmNet LTE and V2X instances are enabled in a composition,
+	 * set 'is_sw_path' flag to true for LTE, so that IPA can ignore the
+	 * dummy address for GEVENTCOUNT register.
 	 */
 	in_params->is_sw_path = false;
-	if (!d_port->in_ep->ep_intr_num)
+	if (gsi->prot_id == USB_PROT_RMNET_IPA &&
+	    gsi_rmnet_v2x->function.fs_descriptors)
 		in_params->is_sw_path = true;
 
 	if (d_port->out_ep) {
 		out_params->is_sw_path = false;
-		if (!d_port->out_ep->ep_intr_num)
+		if (gsi->prot_id == USB_PROT_RMNET_IPA &&
+		    gsi_rmnet_v2x->function.fs_descriptors)
 			out_params->is_sw_path = true;
 	}
 
@@ -740,12 +746,6 @@ static int ipa_connect_channels(struct gsi_data_port *d_port)
 		d_port->out_request.db_reg_phs_addr_msb =
 			ipa_out_channel_out_params.db_reg_phs_addr_msb;
 	}
-
-	/* Send 0 byte packet to QTI only if DTR linetstate is HIGH already */
-	if (gsi->rmnet_dtr_status &&
-			(gsi->prot_id == USB_PROT_RMNET_IPA ||
-			 gsi->prot_id == USB_PROT_RMNET_V2X_IPA))
-		gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
 
 	return ret;
 
@@ -2227,14 +2227,6 @@ gsi_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 			queue_work(gsi->c_port.uevent_wq,
 					&gsi->c_port.uevent_work);
 
-		/* Send 0 byte packet to QTI only if IPA connect is done */
-		if (gsi->rmnet_dtr_status) {
-			if (gsi->prot_id == USB_PROT_RMNET_ETHER)
-				gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
-			else if (gsi->d_port.in_channel_handle != -EINVAL)
-				gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
-		}
-
 		value = 0;
 		break;
 	case ((USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
@@ -2447,8 +2439,6 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 	struct usb_composite_dev *cdev = f->config->cdev;
 	struct net_device	*net;
 	int ret;
-	int in_intr_num = 0;
-	int out_intr_num = 0;
 
 	log_event_dbg("intf=%u, alt=%u", intf, alt);
 
@@ -2521,41 +2511,20 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 			}
 
 			/*
-			 * Configure EPs for GSI. Note that:
-			 * 1. In general, configure HW accelerated EPs for all
-			 *    instances.
-			 * 2. If RmNet LTE(or ECM), RmNet V2X and ADPL instances
-			 *    are enabled in a composition, configure HW
-			 *    accelerated EPs in both directions for V2X and IN
-			 *    direction for RmNet LTE(or ECM). Configure normal
-			 *    EPs for RmNet LTE(or ECM) OUT and ADPL.
+			 * Configure EPs for GSI. Note that when both RmNet LTE
+			 * and V2X instances are enabled in a composition,
+			 * configure HW accelerated EPs for V2X instance and
+			 * normal EPs for LTE.
 			 */
-			switch (gsi->prot_id) {
-			case USB_PROT_RMNET_IPA:
-			case USB_PROT_ECM_IPA:
-				/* If v2x is used then only IN/DL uses GSI EP */
-				if (gsi_rmnet_v2x->function.fs_descriptors) {
-					in_intr_num = 3;
-					out_intr_num = 0;
-				} else {
-					in_intr_num = 2;
-					out_intr_num = 1;
-				}
-				break;
-			case USB_PROT_DIAG_IPA:
-				/* DPL to use normal EP if used with cv2x */
-				if (!gsi_rmnet_v2x->function.fs_descriptors)
-					in_intr_num = 3;
-				break;
-			default:
-				in_intr_num = 2;
-				out_intr_num = 1;
-			}
-
-			/* gsi_configure_ep required only for GSI-IPA EPs */
 			if (gsi->d_port.in_ep &&
 				gsi->prot_id <= USB_PROT_RMNET_V2X_IPA) {
-				gsi->d_port.in_ep->ep_intr_num = in_intr_num;
+				if (gsi->prot_id == USB_PROT_DIAG_IPA)
+					gsi->d_port.in_ep->ep_intr_num = 3;
+				else if (gsi->prot_id == USB_PROT_RMNET_IPA &&
+					 gsi_rmnet_v2x->function.fs_descriptors)
+					gsi->d_port.in_ep->ep_intr_num = 0;
+				else
+					gsi->d_port.in_ep->ep_intr_num = 2;
 				usb_gsi_ep_op(gsi->d_port.in_ep,
 					&gsi->d_port.in_request,
 						GSI_EP_OP_CONFIG);
@@ -2563,7 +2532,11 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 
 			if (gsi->d_port.out_ep &&
 				gsi->prot_id <= USB_PROT_RMNET_V2X_IPA) {
-				gsi->d_port.out_ep->ep_intr_num = out_intr_num;
+				if (gsi->prot_id == USB_PROT_RMNET_IPA &&
+				    gsi_rmnet_v2x->function.fs_descriptors)
+					gsi->d_port.out_ep->ep_intr_num = 0;
+				else
+					gsi->d_port.out_ep->ep_intr_num = 1;
 				usb_gsi_ep_op(gsi->d_port.out_ep,
 					&gsi->d_port.out_request,
 						GSI_EP_OP_CONFIG);
@@ -2630,7 +2603,10 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 	if (gsi->prot_id == USB_PROT_DIAG_IPA ||
 				gsi->prot_id == USB_PROT_DPL_ETHER ||
 				gsi->prot_id == USB_PROT_GPS_CTRL ||
-				gsi->prot_id == USB_PROT_MBIM_IPA)
+				gsi->prot_id == USB_PROT_MBIM_IPA ||
+				gsi->prot_id == USB_PROT_RMNET_IPA ||
+				gsi->prot_id == USB_PROT_RMNET_V2X_IPA ||
+				gsi->prot_id == USB_PROT_RMNET_ETHER)
 		gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
 
 	if (gsi->c_port.uevent_wq)
@@ -3118,14 +3094,24 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.ss_in_desc = &rndis_gsi_ss_in_desc;
 		info.ss_out_desc = &rndis_gsi_ss_out_desc;
 		info.ss_notify_desc = &rndis_gsi_ss_notify_desc;
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+		if (sales_code_is("VZW")) {
+			info.fs_desc_hdr = gsi_vzw_eth_fs_function;
+			info.hs_desc_hdr = gsi_vzw_eth_hs_function;
+			info.ss_desc_hdr = gsi_vzw_eth_ss_function;
+		} else {
+#endif
 		info.fs_desc_hdr = gsi_eth_fs_function;
 		info.hs_desc_hdr = gsi_eth_hs_function;
 		info.ss_desc_hdr = gsi_eth_ss_function;
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+		}
+#endif
 		info.in_epname = "gsi-epin";
 		info.out_epname = "gsi-epout";
 		info.in_req_buf_len = GSI_IN_BUFF_SIZE;
 		gsi->d_port.in_aggr_size = GSI_IN_RNDIS_AGGR_SIZE;
-		info.in_req_num_buf = GSI_NUM_IN_RNDIS_RMNET_ECM_BUFFERS;
+		info.in_req_num_buf = GSI_NUM_IN_RNDIS_BUFFERS;
 		gsi->d_port.out_aggr_size = GSI_OUT_AGGR_SIZE;
 		info.out_req_buf_len = GSI_OUT_AGGR_SIZE;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
@@ -3141,6 +3127,7 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		rndis_set_param_medium(gsi->params, RNDIS_MEDIUM_802_3, 0);
 
 		/* export host's Ethernet address in CDC format */
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 		gsi_get_ether_addr(gsi_dev_addr,
 				   gsi->d_port.ipa_init_params.device_ethaddr);
 
@@ -3152,6 +3139,14 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 				gsi->d_port.ipa_init_params.device_ethaddr);
 		memcpy(gsi->ethaddr, &gsi->d_port.ipa_init_params.host_ethaddr,
 				ETH_ALEN);
+#else
+		random_ether_addr(gsi->d_port.ipa_init_params.device_ethaddr);
+		pr_info("%s MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", __func__,
+			gsi->ethaddr[0], gsi->ethaddr[1], gsi->ethaddr[2],
+			gsi->ethaddr[3], gsi->ethaddr[4], gsi->ethaddr[5]);
+		memcpy(&gsi->d_port.ipa_init_params.host_ethaddr, gsi->ethaddr,
+				ETH_ALEN);
+#endif
 		rndis_set_host_mac(gsi->params, gsi->ethaddr);
 
 		if (gsi->manufacturer && gsi->vendorID &&
@@ -3316,7 +3311,7 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.out_epname = "gsi-epout";
 		gsi->d_port.in_aggr_size = GSI_IN_RMNET_AGGR_SIZE;
 		info.in_req_buf_len = GSI_IN_BUFF_SIZE;
-		info.in_req_num_buf = GSI_NUM_IN_RNDIS_RMNET_ECM_BUFFERS;
+		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
 		gsi->d_port.out_aggr_size = GSI_OUT_AGGR_SIZE;
 		info.out_req_buf_len = GSI_OUT_RMNET_BUF_LEN;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
@@ -3349,7 +3344,7 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.out_epname = "gsi-epout";
 		gsi->d_port.in_aggr_size = GSI_ECM_AGGR_SIZE;
 		info.in_req_buf_len = GSI_IN_BUFF_SIZE;
-		info.in_req_num_buf = GSI_NUM_IN_RNDIS_RMNET_ECM_BUFFERS;
+		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
 		gsi->d_port.out_aggr_size = GSI_ECM_AGGR_SIZE;
 		info.out_req_buf_len = GSI_OUT_ECM_BUF_LEN;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
@@ -3836,6 +3831,69 @@ static struct config_item_type gsi_func_rndis_type = {
 	.ct_owner	= THIS_MODULE,
 };
 
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+static ssize_t ethaddr_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct usb_function_instance *f = dev_get_drvdata(dev);
+	struct gsi_opts *opts = container_of(f, struct gsi_opts, func_inst);
+
+	return snprintf(buf, PAGE_SIZE, "%02x:%02x:%02x:%02x:%02x:%02x\n",
+		opts->gsi->ethaddr[0], opts->gsi->ethaddr[1], opts->gsi->ethaddr[2],
+		opts->gsi->ethaddr[3], opts->gsi->ethaddr[4], opts->gsi->ethaddr[5]);
+}
+
+static ssize_t ethaddr_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct usb_function_instance *f = dev_get_drvdata(dev);
+	struct gsi_opts *opts = container_of(f, struct gsi_opts, func_inst);
+
+	if (sscanf(buf, "%02x:%02x:%02x:%02x:%02x:%02x\n",
+		    (int *)&opts->gsi->ethaddr[0], (int *)&opts->gsi->ethaddr[1],
+		    (int *)&opts->gsi->ethaddr[2], (int *)&opts->gsi->ethaddr[3],
+		    (int *)&opts->gsi->ethaddr[4], (int *)&opts->gsi->ethaddr[5]) == 6)
+		return size;
+
+	return -EINVAL;
+}
+
+static DEVICE_ATTR(ethaddr, S_IRUGO | S_IWUSR, ethaddr_show, ethaddr_store);
+
+static struct device_attribute *rndis_function_attributes[] = {
+	&dev_attr_ethaddr,
+	NULL,
+};
+
+extern struct device *create_function_device(char *name);
+static int create_rndis_device(struct usb_function_instance *fi)
+{
+	struct device *dev;
+	struct device_attribute **attrs;
+	struct device_attribute *attr;
+	int err = 0;
+
+	dev = create_function_device("f_rndis");
+
+	if (IS_ERR(dev)) {
+		pr_info("%s : failed to create f_rndis device\n", __func__);
+		return PTR_ERR(dev);
+	}
+
+	attrs = rndis_function_attributes;
+	if (attrs) {
+		while ((attr = *attrs++) && !err)
+			err = device_create_file(dev, attr);
+		if (err) {
+			device_destroy(dev->class, dev->devt);
+			return -EINVAL;
+		}
+	}
+	dev_set_drvdata(dev, fi);
+	return 0;
+}
+#endif
+
 static int gsi_set_inst_name(struct usb_function_instance *fi,
 	const char *name)
 {
@@ -3878,6 +3936,13 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 	if (ret)
 		log_event_err("%s:ctrl port init failed for %s instance\n",
 						__func__, name);
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	if (prot_id == USB_PROT_RNDIS_IPA && create_rndis_device(&opts->func_inst)) {
+		pr_err("%s: failed to create device\n", __func__);
+		return -ENODEV;
+	}
+#endif
 	return ret;
 }
 

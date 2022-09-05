@@ -59,6 +59,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/ipi.h>
 
+#include <linux/sec_debug.h>
+
 DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);
 EXPORT_PER_CPU_SYMBOL(cpu_number);
 
@@ -141,7 +143,6 @@ static int boot_secondary(unsigned int cpu, struct task_struct *idle)
 }
 
 static DECLARE_COMPLETION(cpu_running);
-bool va52mismatch __ro_after_init;
 
 int __cpu_up(unsigned int cpu, struct task_struct *idle)
 {
@@ -171,15 +172,10 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 
 		if (!cpu_online(cpu)) {
 			pr_crit("CPU%u: failed to come online\n", cpu);
-
-			if (IS_ENABLED(CONFIG_ARM64_52BIT_VA) && va52mismatch)
-				pr_crit("CPU%u: does not support 52-bit VAs\n", cpu);
-
 			ret = -EIO;
 		}
 	} else {
 		pr_err("CPU%u: failed to boot: %d\n", cpu, ret);
-		return ret;
 	}
 
 	secondary_data.task = NULL;
@@ -853,6 +849,7 @@ static void ipi_cpu_stop(unsigned int cpu, struct pt_regs *regs)
 		pr_crit("CPU%u: stopping\n", cpu);
 		show_regs(regs);
 		dump_stack();
+		sec_debug_save_context();
 		dump_stack_minidump(regs->sp);
 		raw_spin_unlock(&stop_lock);
 	}
@@ -1014,29 +1011,11 @@ void tick_broadcast(const struct cpumask *mask)
 }
 #endif
 
-/*
- * The number of CPUs online, not counting this CPU (which may not be
- * fully online and so not counted in num_online_cpus()).
- */
-static inline unsigned int num_other_online_cpus(void)
-{
-	unsigned int this_cpu_online = cpu_online(smp_processor_id());
-
-	return num_online_cpus() - this_cpu_online;
-}
-
-static inline unsigned int num_other_active_cpus(void)
-{
-	unsigned int this_cpu_active = cpu_active(smp_processor_id());
-
-	return num_active_cpus() - this_cpu_active;
-}
-
 void smp_send_stop(void)
 {
 	unsigned long timeout;
 
-	if (num_other_online_cpus()) {
+	if (num_online_cpus() > 1) {
 		cpumask_t mask;
 
 		cpumask_copy(&mask, cpu_online_mask);
@@ -1050,11 +1029,10 @@ void smp_send_stop(void)
 
 	/* Wait up to one second for other CPUs to stop */
 	timeout = USEC_PER_SEC;
-
-	while (num_other_active_cpus() && timeout--)
+	while (num_active_cpus() > 1 && timeout--)
 		udelay(1);
 
-	if (num_other_active_cpus())
+	if (num_active_cpus() > 1)
 		pr_warning("SMP: failed to stop secondary CPUs %*pbl\n",
 			   cpumask_pr_args(cpu_online_mask));
 }

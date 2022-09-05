@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -82,6 +82,8 @@
 #define DCC_MAX_LINK_LIST		5
 #define DCC_INVALID_LINK_LIST		0xFF
 
+static struct dcc_drvdata *s_dcc_drvdata;
+
 enum dcc_func_type {
 	DCC_FUNC_TYPE_CAPTURE,
 	DCC_FUNC_TYPE_CRC,
@@ -147,6 +149,11 @@ struct dcc_drvdata {
 	struct class		*sram_class;
 	struct list_head	cfg_head[DCC_MAX_LINK_LIST];
 	uint32_t		nr_config[DCC_MAX_LINK_LIST];
+	void			*reg_buf;
+	struct msm_dump_data	reg_data;
+	bool			save_reg;
+	void			*sram_buf;
+	struct msm_dump_data	sram_data;
 	uint8_t			curr_list;
 	uint8_t			cti_trig;
 };
@@ -299,19 +306,19 @@ static int __dcc_ll_cfg(struct dcc_drvdata *drvdata, int curr_list)
 			ret = dcc_sram_writel(drvdata, addr, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 
 			ret = dcc_sram_writel(drvdata,
 					entry->mask, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 
 			ret = dcc_sram_writel(drvdata,
 					entry->write_val, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 			addr = 0;
 			break;
 		}
@@ -394,18 +401,18 @@ static int __dcc_ll_cfg(struct dcc_drvdata *drvdata, int curr_list)
 			ret = dcc_sram_writel(drvdata, addr, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 
 			ret = dcc_sram_writel(drvdata, link, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 
 			ret = dcc_sram_writel(drvdata,
 				entry->write_val, sram_offset);
 			if (ret)
 				goto overstep;
-			sram_offset += 4;
+				sram_offset += 4;
 			addr = 0x00;
 			link = 0;
 			break;
@@ -558,6 +565,39 @@ err:
 	return ret;
 }
 
+static void __dcc_reg_dump(struct dcc_drvdata *drvdata)
+{
+	uint32_t *reg_buf;
+	uint8_t i = 0;
+	uint8_t j;
+
+	if (!drvdata->reg_buf)
+		return;
+
+	drvdata->reg_data.version = DCC_REG_DUMP_VER;
+
+	reg_buf = drvdata->reg_buf;
+
+	reg_buf[i++] = dcc_readl(drvdata, DCC_HW_VERSION);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_HW_INFO);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_EXEC_CTRL);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_STATUS);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_CFG);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_FDA_CURR);
+	reg_buf[i++] = dcc_readl(drvdata, DCC_LLA_CURR);
+
+	for (j = 0; j < DCC_MAX_LINK_LIST; j++)
+		reg_buf[i++] = dcc_readl(drvdata, DCC_LL_LOCK(j));
+	for (j = 0; j < DCC_MAX_LINK_LIST; j++)
+		reg_buf[i++] = dcc_readl(drvdata, DCC_LL_CFG(j));
+	for (j = 0; j < DCC_MAX_LINK_LIST; j++)
+		reg_buf[i++] = dcc_readl(drvdata, DCC_LL_BASE(j));
+	for (j = 0; j < DCC_MAX_LINK_LIST; j++)
+		reg_buf[i++] = dcc_readl(drvdata, DCC_FD_BASE(j));
+
+	drvdata->reg_data.magic = DCC_REG_DUMP_MAGIC_V2;
+}
+
 static void __dcc_first_crc(struct dcc_drvdata *drvdata)
 {
 	int i;
@@ -660,6 +700,9 @@ static int dcc_enable(struct dcc_drvdata *drvdata)
 					   DCC_LL_INT_ENABLE(list));
 		}
 	}
+	/* Save DCC registers */
+	if (drvdata->save_reg)
+		__dcc_reg_dump(drvdata);
 
 err:
 	mutex_unlock(&drvdata->mutex);
@@ -684,6 +727,9 @@ static void dcc_disable(struct dcc_drvdata *drvdata)
 	}
 	drvdata->ram_cfg = 0;
 	drvdata->ram_start = 0;
+	/* Save DCC registers */
+	if (drvdata->save_reg)
+		__dcc_reg_dump(drvdata);
 
 	mutex_unlock(&drvdata->mutex);
 }
@@ -1216,6 +1262,19 @@ static int dcc_add_loop(struct dcc_drvdata *drvdata, unsigned long loop_cnt)
 	return 0;
 }
 
+void ext_dcc_disable(void)
+{
+	struct dcc_drvdata *drvdata = s_dcc_drvdata;
+	int list;
+	if (drvdata) {
+		for (list = 0; list < DCC_MAX_LINK_LIST; list++) {
+			//Remove all dcc_writel() calls
+			dcc_sram_writel(drvdata, DCC_LINK_DESCRIPTOR, 0);	
+		}
+	}
+}
+
+EXPORT_SYMBOL(ext_dcc_disable);
 static ssize_t dcc_store_loop(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t size)
@@ -1236,8 +1295,8 @@ static ssize_t dcc_store_loop(struct device *dev,
 		ret = -EINVAL;
 		goto err;
 	}
-
 	ret = dcc_add_loop(drvdata, loop_cnt);
+
 	if (ret)
 		goto err;
 
@@ -1457,8 +1516,7 @@ static ssize_t dcc_sram_read(struct file *file, char __user *data,
 	if (drvdata->ram_size <= *ppos)
 		return 0;
 
-	if ((*ppos + len) < len
-		|| (*ppos + len) > drvdata->ram_size)
+	if ((*ppos + len) > drvdata->ram_size)
 		len = (drvdata->ram_size - *ppos);
 
 	buf = kzalloc(len, GFP_KERNEL);
@@ -1635,6 +1693,7 @@ static int dcc_probe(struct platform_device *pdev)
 	if (!drvdata)
 		return -ENOMEM;
 
+	s_dcc_drvdata = drvdata;
 	drvdata->dev = &pdev->dev;
 	platform_set_drvdata(pdev, drvdata);
 

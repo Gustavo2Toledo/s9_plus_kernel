@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, 2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -460,6 +460,12 @@ static u32 get_frame_size(struct msm_vidc_inst *inst,
 		frame_size = fmt->get_frame_size(plane,
 					inst->capability.mbs_per_frame.max,
 					MB_SIZE_IN_PIXEL);
+		if ((inst->flags & VIDC_SECURE) && (fmt->fourcc == V4L2_PIX_FMT_VP9 )) {
+			dprintk(VIDC_DBG,
+				"Change secure input buffer size from %u to %u\n",
+				frame_size, ALIGN(frame_size/2, SZ_4K));
+				frame_size = ALIGN(frame_size/2, SZ_4K);
+		}
 		if (inst->buffer_size_limit &&
 			(inst->buffer_size_limit < frame_size)) {
 			frame_size = inst->buffer_size_limit;
@@ -685,8 +691,7 @@ int msm_vdec_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 		if (inst->fmts[fmt->type].fourcc == f->fmt.pix_mp.pixelformat &&
 			inst->prop.width[OUTPUT_PORT] == f->fmt.pix_mp.width &&
 			inst->prop.height[OUTPUT_PORT] ==
-			f->fmt.pix_mp.height &&
-			!inst->buffer_size_limit) {
+				f->fmt.pix_mp.height) {
 			dprintk(VIDC_DBG, "No change in OUTPUT port params\n");
 			return 0;
 		}

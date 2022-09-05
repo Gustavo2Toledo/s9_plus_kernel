@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -138,6 +138,9 @@ enum esd_check_status_mode {
 	ESD_MODE_REG_READ,
 	ESD_MODE_SW_BTA,
 	ESD_MODE_PANEL_TE,
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	ESD_MODE_PANEL_IRQ,
+#endif
 	ESD_MODE_MAX
 };
 
@@ -159,17 +162,6 @@ enum dsi_panel_type {
 	DSI_PANEL = 0,
 	EXT_BRIDGE,
 	DSI_PANEL_TYPE_MAX,
-};
-
-/* Extended Panel config for panels with additional gpios */
-struct dsi_panel_exd_config {
-	int display_1p8_en;
-	int led_5v_en;
-	int switch_power;
-	int led_en1;
-	int led_en2;
-	int oenab;
-	int selab;
 };
 
 struct dsi_panel {
@@ -212,11 +204,12 @@ struct dsi_panel {
 	bool te_using_watchdog_timer;
 
 	char dsc_pps_cmd[DSI_CMD_PPS_SIZE];
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	void *panel_private;
+#endif
 	enum dsi_dms_mode dms_mode;
 
 	bool sync_broadcast_en;
-
-	struct dsi_panel_exd_config exd_config;
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -317,5 +310,14 @@ int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel,
 				struct device_node *of_node);
 
 void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+int dsi_panel_power_on(struct dsi_panel *panel);
+int dsi_panel_power_off(struct dsi_panel *panel);
+int dsi_panel_tx_cmd_set(struct dsi_panel *panel, enum dsi_cmd_set_type type);
+int ss_dsi_panel_parse_cmd_sets(struct dsi_panel_cmd_set *cmd_sets,
+		struct device_node *of_node);
+int dsi_panel_reset_alone(struct dsi_panel *panel);
+#endif
 
 #endif /* _DSI_PANEL_H_ */
