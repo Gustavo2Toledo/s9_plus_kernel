@@ -99,6 +99,9 @@ static bool mall_destroy(struct tcf_proto *tp, bool force)
 	if (tc_should_offload(dev, tp, head->flags))
 		mall_destroy_hw_filter(tp, head, (unsigned long) head);
 
+	if (tc_should_offload(dev, tp, head->flags))
+		mall_destroy_hw_filter(tp, head, (unsigned long) head);
+
 	call_rcu(&head->rcu, mall_destroy_rcu);
 	return true;
 }

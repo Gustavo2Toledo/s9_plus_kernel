@@ -1347,6 +1347,8 @@ static int tce_iommu_attach_group(void *iommu_data,
 			ret = -EPERM;
 			goto unlock_exit;
 		}
+		ret = tce_iommu_take_ownership(container, table_group);
+	} else {
 		ret = tce_iommu_take_ownership_ddw(container, table_group);
 		if (!tce_groups_attached(container) && !container->tables[0])
 			container->def_window_pending = true;

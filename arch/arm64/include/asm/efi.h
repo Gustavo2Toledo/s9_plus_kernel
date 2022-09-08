@@ -52,6 +52,9 @@ int efi_set_mapping_permissions(struct mm_struct *mm, efi_memory_desc_t *md);
 #define __efi_call_early(f, ...)	f(__VA_ARGS__)
 #define efi_is_64bit()			(true)
 
+#define efi_call_proto(protocol, f, instance, ...)			\
+	((protocol##_t *)instance)->f(instance, ##__VA_ARGS__)
+
 #define alloc_screen_info(x...)		&screen_info
 #define free_screen_info(x...)
 
@@ -93,6 +96,12 @@ static inline void efi_set_pgd(struct mm_struct *mm)
 			update_saved_ttbr0(current, mm);
 			uaccess_ttbr0_enable();
 			post_ttbr_update_workaround();
+			 * restored as part of a return from exception. Set
+			 * the hardware TTBR0_EL1 using cpu_switch_mm()
+			 * directly to enable potential errata workarounds.
+			 */
+			update_saved_ttbr0(current, mm);
+			cpu_switch_mm(mm->pgd, mm);
 		} else {
 			/*
 			 * Defer the switch to the current thread's TTBR0_EL1
@@ -101,6 +110,11 @@ static inline void efi_set_pgd(struct mm_struct *mm)
 			 */
 			uaccess_ttbr0_disable();
 			update_saved_ttbr0(current, current->active_mm);
+			 * (if different from init_mm).
+			 */
+			cpu_set_reserved_ttbr0();
+			if (current->active_mm != &init_mm)
+				update_saved_ttbr0(current, current->active_mm);
 		}
 	}
 }

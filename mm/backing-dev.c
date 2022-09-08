@@ -313,6 +313,7 @@ static int wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi,
 	spin_lock_init(&wb->work_lock);
 	INIT_LIST_HEAD(&wb->work_list);
 	INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
+	wb->dirty_sleep = jiffies;
 
 	wb->congested = wb_congested_get_create(bdi, blkcg_id, gfp);
 	if (!wb->congested) {
@@ -817,6 +818,10 @@ static void cgwb_bdi_register(struct backing_dev_info *bdi)
 static void cgwb_remove_from_bdi_list(struct bdi_writeback *wb)
 {
 	list_del_rcu(&wb->bdi_node);
+}
+static void cgwb_bdi_destroy(struct backing_dev_info *bdi)
+{
+	wb_congested_put(bdi->wb_congested);
 }
 
 #endif	/* CONFIG_CGROUP_WRITEBACK */

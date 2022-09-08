@@ -203,6 +203,22 @@ static void *etm_setup_aux(int event_cpu, void **pages,
 	event_data = alloc_event_data(event_cpu);
 	if (!event_data)
 		return NULL;
+
+	/*
+	 * In theory nothing prevent tracers in a trace session from being
+	 * associated with different sinks, nor having a sink per tracer.  But
+	 * until we have HW with this kind of topology we need to assume tracers
+	 * in a trace session are using the same sink.  Therefore go through
+	 * the coresight bus and pick the first enabled sink.
+	 *
+	 * When operated from sysFS users are responsible to enable the sink
+	 * while from perf, the perf tools will do it based on the choice made
+	 * on the cmd line.  As such the "enable_sink" flag in sysFS is reset.
+	 */
+	sink = coresight_get_enabled_sink(true);
+	if (!sink)
+		goto err;
+
 	INIT_WORK(&event_data->work, free_event_data);
 
 	/*

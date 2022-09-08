@@ -36,6 +36,7 @@
 #include <linux/device.h>
 #include <linux/freezer.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/mman.h>
 #include <linux/atomic.h>

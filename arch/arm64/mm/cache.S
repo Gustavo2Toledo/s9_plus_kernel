@@ -97,6 +97,7 @@ ENTRY(flush_cache_all)
 	ic	ialluis				// I+BTB cache invalidate
 	ret	x12
 ENDPROC(flush_cache_all)
+#include <asm/asm-uaccess.h>
 
 /*
  *	flush_icache_range(start,end)
@@ -126,6 +127,7 @@ FALLTHROUGH(__flush_cache_user_range)
  */
 ENTRY(__flush_cache_user_range)
 	uaccess_ttbr0_enable x2, x3, x4
+	uaccess_ttbr0_enable x2, x3
 	dcache_line_size x2, x3
 	sub	x3, x2, #1
 	bic	x4, x0, x3
@@ -149,6 +151,7 @@ USER(9f, ic	ivau, x4	)		// invalidate I line PoU
 	mov	x0, #0
 1:
 	uaccess_ttbr0_disable x1, x2
+	uaccess_ttbr0_disable x1
 	ret
 9:
 	mov	x0, #-EFAULT

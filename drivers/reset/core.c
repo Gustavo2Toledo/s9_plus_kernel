@@ -32,6 +32,9 @@ static LIST_HEAD(reset_controller_list);
  * @refcnt: Number of gets of this reset_control
  * @shared: Is this a shared (1), or an exclusive (0) reset_control?
  * @deassert_cnt: Number of times this reset line has been deasserted
+ * @triggered_count: Number of times this reset line has been reset. Currently
+ *                   only used for shared resets, which means that the value
+ *                   will be either 0 or 1.
  */
 struct reset_control {
 	struct reset_controller_dev *rcdev;
@@ -40,6 +43,7 @@ struct reset_control {
 	unsigned int refcnt;
 	int shared;
 	atomic_t deassert_count;
+	atomic_t triggered_count;
 };
 
 /**
@@ -145,12 +149,35 @@ int reset_control_reset(struct reset_control *rstc)
 		return 0;
 
 	if (WARN_ON(IS_ERR(rstc)))
+ * On a shared reset line the actual reset pulse is only triggered once for the
+ * lifetime of the reset_control instance: for all but the first caller this is
+ * a no-op.
+ * Consumers must not use reset_control_(de)assert on shared reset lines when
+ * reset_control_reset has been used.
+ */
+int reset_control_reset(struct reset_control *rstc)
+{
+	int ret;
+
+	if (WARN_ON(IS_ERR_OR_NULL(rstc)))
 		return -EINVAL;
 
-	if (rstc->rcdev->ops->reset)
-		return rstc->rcdev->ops->reset(rstc->rcdev, rstc->id);
+	if (!rstc->rcdev->ops->reset)
+		return -ENOTSUPP;
 
-	return -ENOTSUPP;
+	if (rstc->shared) {
+		if (WARN_ON(atomic_read(&rstc->deassert_count) != 0))
+			return -EINVAL;
+
+		if (atomic_inc_return(&rstc->triggered_count) != 1)
+			return 0;
+	}
+
+	ret = rstc->rcdev->ops->reset(rstc->rcdev, rstc->id);
+	if (rstc->shared && ret)
+		atomic_dec(&rstc->triggered_count);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(reset_control_reset);
 
@@ -167,6 +194,8 @@ EXPORT_SYMBOL_GPL(reset_control_reset);
  *
  * If rstc is NULL it is an optional reset and the function will just
  * return 0.
+ * Consumers must not use reset_control_reset on shared reset lines when
+ * reset_control_(de)assert has been used.
  */
 int reset_control_assert(struct reset_control *rstc)
 {
@@ -180,6 +209,9 @@ int reset_control_assert(struct reset_control *rstc)
 		return -ENOTSUPP;
 
 	if (rstc->shared) {
+		if (WARN_ON(atomic_read(&rstc->triggered_count) != 0))
+			return -EINVAL;
+
 		if (WARN_ON(atomic_read(&rstc->deassert_count) == 0))
 			return -EINVAL;
 
@@ -199,6 +231,8 @@ EXPORT_SYMBOL_GPL(reset_control_assert);
  *
  * If rstc is NULL it is an optional reset and the function will just
  * return 0.
+ * Consumers must not use reset_control_reset on shared reset lines when
+ * reset_control_(de)assert has been used.
  */
 int reset_control_deassert(struct reset_control *rstc)
 {
@@ -212,6 +246,9 @@ int reset_control_deassert(struct reset_control *rstc)
 		return -ENOTSUPP;
 
 	if (rstc->shared) {
+		if (WARN_ON(atomic_read(&rstc->triggered_count) != 0))
+			return -EINVAL;
+
 		if (atomic_inc_return(&rstc->deassert_count) != 1)
 			return 0;
 	}

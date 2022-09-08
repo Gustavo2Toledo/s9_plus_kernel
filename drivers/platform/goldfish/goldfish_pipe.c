@@ -281,6 +281,10 @@ static ssize_t goldfish_pipe_read_write(struct file *filp, char __user *buffer,
 			mutex_unlock(&pipe->lock);
 			return ret;
 		}
+		ret = get_user_pages_unlocked(address, 1, &page,
+				is_write ? 0 : FOLL_WRITE);
+		if (ret < 0)
+			break;
 
 		xaddr = page_to_phys(pages[0]) | (address & ~PAGE_MASK);
 		xaddr_prev = xaddr;

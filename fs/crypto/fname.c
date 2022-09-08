@@ -182,8 +182,10 @@ static int digest_decode(const char *src, int len, char *dst)
 	return cp - dst;
 }
 
+
 bool fscrypt_fname_encrypted_size(const struct inode *inode, u32 orig_len,
 				  u32 max_len, u32 *encrypted_len_ret)
+u32 fscrypt_fname_encrypted_size(const struct inode *inode, u32 ilen)
 {
 	int padding = 4 << (inode->i_crypt_info->ci_flags &
 			    FS_POLICY_FLAGS_PAD_MASK);
@@ -208,6 +210,7 @@ bool fscrypt_fname_encrypted_size(const struct inode *inode, u32 orig_len,
 int fscrypt_fname_alloc_buffer(const struct inode *inode,
 			       u32 max_encrypted_len,
 			       struct fscrypt_str *crypto_str)
+				u32 ilen, struct fscrypt_str *crypto_str)
 {
 	const u32 max_encoded_len =
 		max_t(u32, BASE64_CHARS(FSCRYPT_FNAME_MAX_UNDIGESTED_SIZE),
@@ -333,6 +336,7 @@ int fscrypt_setup_filename(struct inode *dir, const struct qstr *iname,
 	}
 	ret = fscrypt_get_encryption_info(dir);
 	if (ret)
+	if (ret && ret != -EOPNOTSUPP)
 		return ret;
 
 	if (dir->i_crypt_info) {

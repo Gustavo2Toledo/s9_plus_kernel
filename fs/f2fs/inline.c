@@ -183,6 +183,11 @@ int f2fs_convert_inline_page(struct dnode_of_data *dn, struct page *page)
 	if (dirty) {
 		inode_dec_dirty_pages(dn->inode);
 		f2fs_remove_dirty_inode(dn->inode);
+	write_data_page(dn, &fio);
+	f2fs_wait_on_page_writeback(page, DATA, true);
+	if (dirty) {
+		inode_dec_dirty_pages(dn->inode);
+		remove_dirty_inode(dn->inode);
 	}
 
 	/* this converted inline_data should be recovered. */
@@ -686,6 +691,7 @@ int f2fs_read_inline_dir(struct file *file, struct dir_context *ctx,
 	int err;
 
 	make_dentry_ptr_inline(inode, &d, inline_dentry);
+	int err;
 
 	if (ctx->pos == d.max)
 		return 0;
@@ -709,6 +715,11 @@ int f2fs_read_inline_dir(struct file *file, struct dir_context *ctx,
 		ctx->pos = d.max;
 
 	f2fs_put_page(ipage, 0);
+	err = f2fs_fill_dentries(ctx, &d, 0, fstr);
+	if (!err)
+		ctx->pos = NR_INLINE_DENTRY;
+
+	f2fs_put_page(ipage, 1);
 	return err < 0 ? err : 0;
 }
 

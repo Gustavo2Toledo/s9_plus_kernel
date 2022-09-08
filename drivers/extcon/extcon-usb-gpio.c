@@ -68,6 +68,7 @@ static const unsigned int usb_extcon_cable[] = {
  * - VBUS only - we want to distinguish between [1] and [2], so ID is always 1.
  * - ID only - we want to distinguish between [1] and [4], so VBUS = ID.
  */
+*/
 static void usb_extcon_detect_cable(struct work_struct *work)
 {
 	int id, vbus;
@@ -182,6 +183,7 @@ static int usb_extcon_probe(struct platform_device *pdev)
 						IRQF_TRIGGER_RISING |
 						IRQF_TRIGGER_FALLING |
 						IRQF_ONESHOT,
+						IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 						pdev->name, info);
 		if (ret < 0) {
 			dev_err(dev, "failed to request handler for ID IRQ\n");
@@ -201,6 +203,7 @@ static int usb_extcon_probe(struct platform_device *pdev)
 						IRQF_TRIGGER_RISING |
 						IRQF_TRIGGER_FALLING |
 						IRQF_ONESHOT,
+						IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 						pdev->name, info);
 		if (ret < 0) {
 			dev_err(dev, "failed to request handler for VBUS IRQ\n");
@@ -297,6 +300,9 @@ static int usb_extcon_resume(struct device *dev)
 
 	queue_delayed_work(system_power_efficient_wq,
 			   &info->wq_detcable, 0);
+	if (!device_may_wakeup(dev))
+		queue_delayed_work(system_power_efficient_wq,
+				   &info->wq_detcable, 0);
 
 	return ret;
 }

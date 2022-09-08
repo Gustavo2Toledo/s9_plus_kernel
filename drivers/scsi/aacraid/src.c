@@ -446,6 +446,7 @@ err_out:
 
 err_blink:
 	return (status >> 16) & 0xFF;
+	return (status > 16) & 0xFF;
 }
 
 /**

@@ -19,6 +19,20 @@ Required properties:
   - qcom,ice-clk-rates: this is an array that specifies supported Inline
 		    Crypto Engine (ICE) clock frequencies, Units - Hz.
   - sdhc-msm-crypto: phandle to SDHC ICE node
+- compatible: Should contain "qcom,sdhci-msm-v4".
+- reg: Base address and length of the register in the following order:
+	- Host controller register map (required)
+	- SD Core register map (required)
+- interrupts: Should contain an interrupt-specifiers for the interrupts:
+	- Host controller interrupt (required)
+- pinctrl-names: Should contain only one value - "default".
+- pinctrl-0: Should specify pin control groups used for this controller.
+- clocks: A list of phandle + clock-specifier pairs for the clocks listed in clock-names.
+- clock-names: Should contain the following:
+	"iface" - Main peripheral bus clock (PCLK/HCLK - AHB Bus clock) (required)
+	"core"	- SDC MMC clock (MCLK) (required)
+	"bus"	- SDCC bus voter clock (optional)
+	"xo"	- TCXO clock (optional)
 
 Required alias:
 - The slot number is specified via an alias with the following format

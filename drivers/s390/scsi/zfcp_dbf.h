@@ -3,6 +3,7 @@
  * debug feature declarations
  *
  * Copyright IBM Corp. 2008, 2017
+ * Copyright IBM Corp. 2008, 2016
  */
 
 #ifndef ZFCP_DBF_H
@@ -419,6 +420,17 @@ void zfcp_dbf_scsi_devreset(char *tag, struct scsi_cmnd *scmnd, u8 flag,
 
 	memcpy(&tmp_tag[3], tag, 4);
 	_zfcp_dbf_scsi(tmp_tag, 1, scmnd, fsf_req);
+}
+
+/**
+ * zfcp_dbf_scsi_nullcmnd() - trace NULLify of SCSI command in dev/tgt-reset.
+ * @scmnd: SCSI command that was NULLified.
+ * @fsf_req: request that owned @scmnd.
+ */
+static inline void zfcp_dbf_scsi_nullcmnd(struct scsi_cmnd *scmnd,
+					  struct zfcp_fsf_req *fsf_req)
+{
+	_zfcp_dbf_scsi("scfc__1", 3, scmnd, fsf_req);
 }
 
 /**

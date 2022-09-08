@@ -67,11 +67,21 @@ EXPORT_SYMBOL_GPL(mds_user_clear);
 /* Control MDS CPU buffer clear before idling (halt, mwait) */
 DEFINE_STATIC_KEY_FALSE(mds_idle_clear);
 EXPORT_SYMBOL_GPL(mds_idle_clear);
+=======
+#include <asm/pgtable.h>
+#include <asm/cacheflush.h>
+>>>>>>> 58ef501666b4a161a3ac1fee7190bbf3541ab349
 
 void __init check_bugs(void)
 {
 	identify_boot_cpu();
 
+	if (!IS_ENABLED(CONFIG_SMP)) {
+		pr_info("CPU: ");
+		print_cpu_info(&boot_cpu_data);
+	}
+
+#ifdef CONFIG_X86_32
 	/*
 	 * identify_boot_cpu() initialized SMT support information, let the
 	 * core code know.
@@ -538,6 +548,8 @@ static enum spectre_v2_mitigation_cmd __init spectre_v2_parse_cmdline(void)
 	spec_v2_print_cond(mitigation_options[i].option,
 			   mitigation_options[i].secure);
 	return cmd;
+=======
+>>>>>>> 58ef501666b4a161a3ac1fee7190bbf3541ab349
 }
 
 static void __init spectre_v2_select_mitigation(void)

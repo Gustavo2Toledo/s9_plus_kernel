@@ -633,6 +633,7 @@ int coresight_store_path(struct coresight_device *csdev, struct list_head *path)
 int coresight_enable(struct coresight_device *csdev)
 {
 	int ret = 0;
+	int cpu, ret = 0;
 	struct coresight_device *sink;
 	struct list_head *path;
 	enum coresight_dev_subtype_source subtype;

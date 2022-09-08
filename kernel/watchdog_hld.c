@@ -23,6 +23,7 @@ static cpumask_t __read_mostly watchdog_cpus;
 #else
 static DEFINE_PER_CPU(struct perf_event *, watchdog_ev);
 #endif
+static DEFINE_PER_CPU(struct perf_event *, watchdog_ev);
 
 /* boot commands */
 /*
@@ -34,6 +35,7 @@ unsigned int __read_mostly hardlockup_panic =
 #ifdef CONFIG_HARDLOCKUP_DETECTOR_NMI
 static unsigned long hardlockup_allcpu_dumped;
 #endif
+static unsigned long hardlockup_allcpu_dumped;
 /*
  * We may not want to enable hard lockup detection by default in all cases,
  * for example when running the kernel as a guest on a hypervisor. In these

@@ -704,6 +704,7 @@ static const struct of_device_id spidev_dt_ids[] = {
 #if defined(CONFIG_SENSORS_QBT1000) && !defined(ENABLE_SENSORS_FPRINT_SECURE)
 	{ .compatible = "qbtspi" },
 #endif
+	{ .compatible = "ge,achc" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, spidev_dt_ids);

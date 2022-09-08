@@ -781,6 +781,10 @@ int tmc_etr_bam_init(struct amba_device *adev,
 static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 {
 	int ret = 0;
+static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
+{
+	int ret = 0;
+	bool used = false;
 	unsigned long flags;
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 
@@ -845,6 +849,8 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	}
 
 	drvdata->enable = true;
+	drvdata->mode = CS_MODE_SYSFS;
+	tmc_etr_enable_hw(drvdata);
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
@@ -924,6 +930,8 @@ static void tmc_disable_etr_sink(struct coresight_device *csdev)
 			tmc_etr_disable_hw(drvdata);
 			drvdata->mode = CS_MODE_DISABLED;
 		}
+		tmc_etr_disable_hw(drvdata);
+		drvdata->mode = CS_MODE_DISABLED;
 	}
 
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);

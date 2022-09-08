@@ -226,6 +226,10 @@ struct fsxattr {
 #define BLKSECDISCARD _IO(0x12,125)
 #define BLKROTATIONAL _IO(0x12,126)
 #define BLKZEROOUT _IO(0x12,127)
+/*
+ * A jump here: 130-131 are reserved for zoned block devices
+ * (see uapi/linux/blkzoned.h)
+ */
 
 #define BMAP_IOCTL 1		/* obsolete - kept for compatibility */
 #define FIBMAP	   _IO(0x00,1)	/* bmap access */
@@ -264,6 +268,7 @@ struct fsxattr {
 #define FS_POLICY_FLAGS_PAD_MASK	0x03
 #define FS_POLICY_FLAG_DIRECT_KEY	0x04	/* use master key directly */
 #define FS_POLICY_FLAGS_VALID		0x07
+#define FS_POLICY_FLAGS_VALID		0x03
 
 /* Encryption algorithms */
 #define FS_ENCRYPTION_MODE_INVALID		0

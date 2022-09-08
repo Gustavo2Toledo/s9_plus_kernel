@@ -50,6 +50,7 @@
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 #include <asm/uaccess.h>
+#include <asm/asm-uaccess.h>
 #include <xen/interface/xen.h>
 
 
@@ -101,11 +102,13 @@ ENTRY(privcmd_call)
 	 * is enabled (it implies that hardware UAO and PAN disabled).
 	 */
 	uaccess_ttbr0_enable x6, x7, x8
+	uaccess_ttbr0_enable x6, x7
 	hvc XEN_IMM
 
 	/*
 	 * Disable userspace access from kernel once the hyp call completed.
 	 */
 	uaccess_ttbr0_disable x6, x7
+	uaccess_ttbr0_disable x6
 	ret
 ENDPROC(privcmd_call);

@@ -25,6 +25,8 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/sysreg.h>
+
 /*
  * User space memory access functions
  */
@@ -162,11 +164,18 @@ static inline void __uaccess_ttbr0_disable(void)
 	write_sysreg(ttbr, ttbr1_el1);
 	isb();
 	local_irq_restore(flags);
+	unsigned long ttbr;
+
+	/* reserved_ttbr0 placed at the end of swapper_pg_dir */
+	ttbr = read_sysreg(ttbr1_el1) + SWAPPER_DIR_SIZE;
+	write_sysreg(ttbr, ttbr0_el1);
+	isb();
 }
 
 static inline void __uaccess_ttbr0_enable(void)
 {
 	unsigned long flags, ttbr0, ttbr1;
+	unsigned long flags;
 
 	/*
 	 * Disable interrupts to avoid preemption between reading the 'ttbr0'
@@ -185,6 +194,7 @@ static inline void __uaccess_ttbr0_enable(void)
 
 	/* Restore user page table */
 	write_sysreg(ttbr0, ttbr0_el1);
+	write_sysreg(current_thread_info()->ttbr0, ttbr0_el1);
 	isb();
 	local_irq_restore(flags);
 }

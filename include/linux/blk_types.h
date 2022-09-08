@@ -17,7 +17,6 @@ struct io_context;
 struct cgroup_subsys_state;
 typedef void (bio_end_io_t) (struct bio *);
 
-#ifdef CONFIG_BLOCK
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
  * stacking drivers)
@@ -105,24 +104,6 @@ struct bio {
 	struct bio_vec		bi_inline_vecs[0];
 };
 
-#define BIO_OP_SHIFT	(8 * FIELD_SIZEOF(struct bio, bi_opf) - REQ_OP_BITS)
-#define bio_flags(bio)	((bio)->bi_opf & ((1 << BIO_OP_SHIFT) - 1))
-#define bio_op(bio)	((bio)->bi_opf >> BIO_OP_SHIFT)
-
-#define bio_set_op_attrs(bio, op, op_flags) do {			\
-	if (__builtin_constant_p(op))					\
-		BUILD_BUG_ON((op) + 0U >= (1U << REQ_OP_BITS));		\
-	else								\
-		WARN_ON_ONCE((op) + 0U >= (1U << REQ_OP_BITS));		\
-	if (__builtin_constant_p(op_flags))				\
-		BUILD_BUG_ON((op_flags) + 0U >= (1U << BIO_OP_SHIFT));	\
-	else								\
-		WARN_ON_ONCE((op_flags) + 0U >= (1U << BIO_OP_SHIFT));	\
-	(bio)->bi_opf = bio_flags(bio);					\
-	(bio)->bi_opf |= (((op) + 0U) << BIO_OP_SHIFT);			\
-	(bio)->bi_opf |= (op_flags);					\
-} while (0)
-
 #define BIO_RESET_BYTES		offsetof(struct bio, bi_max_vecs)
 
 /*
@@ -136,6 +117,8 @@ struct bio {
 #define BIO_QUIET	6	/* Make BIO Quiet */
 #define BIO_CHAIN	7	/* chained bio, ->bi_remaining in effect */
 #define BIO_REFFED	8	/* bio has elevated ->bi_cnt */
+#define BIO_THROTTLED	9	/* This bio has already been subjected to
+				 * throttling rules. Don't do it again. */
 
 /*
  * Flags starting here get preserved by bio_reset() - this includes
@@ -174,20 +157,55 @@ struct bio {
 #define SEC_BYPASS	(1ULL << __SEC_BYPASS)
 
 /*
- * Request flags.  For use in the cmd_flags field of struct request, and in
- * bi_opf of struct bio.  Note that some flags are only valid in either one.
+ * Operations and flags common to the bio and request structures.
+ * We use 8 bits for encoding the operation, and the remaining 24 for flags.
+ *
+ * The least significant bit of the operation number indicates the data
+ * transfer direction:
+ *
+ *   - if the least significant bit is set transfers are TO the device
+ *   - if the least significant bit is not set transfers are FROM the device
+ *
+ * If a operation does not transfer data the least significant bit has no
+ * meaning.
  */
-enum rq_flag_bits {
-	/* common flags */
-	__REQ_FAILFAST_DEV,	/* no driver retries of device errors */
+#define REQ_OP_BITS	8
+#define REQ_OP_MASK	((1 << REQ_OP_BITS) - 1)
+#define REQ_FLAG_BITS	24
+
+enum req_opf {
+	/* read sectors from the device */
+	REQ_OP_READ		= 0,
+	/* write sectors to the device */
+	REQ_OP_WRITE		= 1,
+	/* flush the volatile write cache */
+	REQ_OP_FLUSH		= 2,
+	/* discard sectors */
+	REQ_OP_DISCARD		= 3,
+	/* get zone information */
+	REQ_OP_ZONE_REPORT	= 4,
+	/* securely erase sectors */
+	REQ_OP_SECURE_ERASE	= 5,
+	/* seset a zone write pointer */
+	REQ_OP_ZONE_RESET	= 6,
+	/* write the same sector many times */
+	REQ_OP_WRITE_SAME	= 7,
+	/* write the zero filled sector many times */
+	REQ_OP_WRITE_ZEROES	= 8,
+
+	REQ_OP_LAST,
+};
+
+enum req_flag_bits {
+	__REQ_FAILFAST_DEV =	/* no driver retries of device errors */
+		REQ_OP_BITS,
 	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
 	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
-
 	__REQ_SYNC,		/* request is sync (sync write or read) */
 	__REQ_META,		/* metadata io request */
 	__REQ_PRIO,		/* boost priority in cfq */
-
-	__REQ_NOIDLE,		/* don't anticipate more IO after this one */
+	__REQ_NOMERGE,		/* don't touch this for merging */
+	__REQ_IDLE,		/* anticipate more IO after this one */
 	__REQ_INTEGRITY,	/* I/O includes block integrity payload */
 	__REQ_FUA,		/* forced unit access */
 	__REQ_PREFLUSH,		/* request for cache flush */
@@ -224,6 +242,8 @@ enum rq_flag_bits {
 	__REQ_MQ_INFLIGHT,	/* track inflight for MQ */
 	__REQ_URGENT,		/* urgent request */
 	__REQ_BYPASS,		/* don't encrypt/decrypt I/O*/
+	__REQ_RAHEAD,		/* read ahead, can fail anytime */
+	__REQ_BACKGROUND,	/* background IO */
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -245,14 +265,24 @@ enum rq_flag_bits {
 	(REQ_FAILFAST_MASK | REQ_SYNC | REQ_META | REQ_PRIO | REQ_NOIDLE | \
 	 REQ_PREFLUSH | REQ_FUA | REQ_INTEGRITY | REQ_NOMERGE | REQ_BARRIER | REQ_BYPASS)
 #define REQ_CLONE_MASK		REQ_COMMON_MASK
-
-/* This mask is used for both bio and request merge checking */
-#define REQ_NOMERGE_FLAGS \
-	(REQ_NOMERGE | REQ_STARTED | REQ_SOFTBARRIER | REQ_PREFLUSH | REQ_FUA | REQ_FLUSH_SEQ)
-
+#define REQ_NOMERGE		(1ULL << __REQ_NOMERGE)
+#define REQ_IDLE		(1ULL << __REQ_IDLE)
+#define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
+#define REQ_FUA			(1ULL << __REQ_FUA)
+#define REQ_PREFLUSH		(1ULL << __REQ_PREFLUSH)
 #define REQ_RAHEAD		(1ULL << __REQ_RAHEAD)
-#define REQ_THROTTLED		(1ULL << __REQ_THROTTLED)
+#define REQ_BACKGROUND		(1ULL << __REQ_BACKGROUND)
 
+#define REQ_FAILFAST_MASK \
+	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
+
+#define REQ_NOMERGE_FLAGS \
+	(REQ_NOMERGE | REQ_PREFLUSH | REQ_FUA)
+
+#define bio_op(bio) \
+	((bio)->bi_opf & REQ_OP_MASK)
+#define req_op(req) \
+	((req)->cmd_flags & REQ_OP_MASK)
 #define REQ_SORTED		(1ULL << __REQ_SORTED)
 #define REQ_SOFTBARRIER		(1ULL << __REQ_SOFTBARRIER)
 #define REQ_FUA			(1ULL << __REQ_FUA)
@@ -283,8 +313,28 @@ enum req_op {
 	REQ_OP_WRITE_SAME,	/* write same block many times */
 	REQ_OP_FLUSH,		/* request for cache flush */
 };
+/* obsolete, don't use in new code */
+static inline void bio_set_op_attrs(struct bio *bio, unsigned op,
+		unsigned op_flags)
+{
+	bio->bi_opf = op | op_flags;
+}
 
-#define REQ_OP_BITS 3
+static inline bool op_is_write(unsigned int op)
+{
+	return (op & 1);
+}
+
+/*
+ * Reads are always treated as synchronous, as are requests with the FUA or
+ * PREFLUSH flag.  Other operations may be marked as synchronous using the
+ * REQ_SYNC flag.
+ */
+static inline bool op_is_sync(unsigned int op)
+{
+	return (op & REQ_OP_MASK) == REQ_OP_READ ||
+		(op & (REQ_SYNC | REQ_FUA | REQ_PREFLUSH));
+}
 
 typedef unsigned int blk_qc_t;
 #define BLK_QC_T_NONE	-1U
@@ -309,5 +359,21 @@ static inline unsigned int blk_qc_t_to_tag(blk_qc_t cookie)
 {
 	return cookie & ((1u << BLK_QC_T_SHIFT) - 1);
 }
+
+struct blk_issue_stat {
+	u64 time;
+};
+
+#define BLK_RQ_STAT_BATCH	64
+
+struct blk_rq_stat {
+	s64 mean;
+	u64 min;
+	u64 max;
+	s32 nr_samples;
+	s32 nr_batch;
+	u64 batch;
+	s64 time;
+};
 
 #endif /* __LINUX_BLK_TYPES_H */

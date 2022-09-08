@@ -204,6 +204,7 @@ struct snd_seq_queue *snd_seq_queue_alloc(int client, int locked, unsigned int i
 		return ERR_PTR(-ENOMEM);
 	}
 	return q;
+	return q->queue;
 }
 
 /* delete a queue - queue must be owned by the client */

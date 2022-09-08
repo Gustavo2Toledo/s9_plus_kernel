@@ -432,6 +432,7 @@ static inline int ptr_ring_resize(struct ptr_ring *r, int size, gfp_t gfp,
  */
 static inline int ptr_ring_resize_multiple(struct ptr_ring **rings,
 					   unsigned int nrings,
+static inline int ptr_ring_resize_multiple(struct ptr_ring **rings, int nrings,
 					   int size,
 					   gfp_t gfp, void (*destroy)(void *))
 {

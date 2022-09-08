@@ -101,6 +101,12 @@ static const struct xhci_plat_priv xhci_plat_renesas_rcar_gen3 = {
 	.plat_start = xhci_rcar_start,
 };
 
+static const struct xhci_plat_priv xhci_plat_renesas_rcar_r8a7796 = {
+	.firmware_name = XHCI_RCAR_FIRMWARE_NAME_V3,
+	.init_quirk = xhci_rcar_init_quirk,
+	.plat_start = xhci_rcar_start,
+};
+
 static const struct of_device_id usb_xhci_of_match[] = {
 	{
 		.compatible = "generic-xhci",
@@ -124,6 +130,9 @@ static const struct of_device_id usb_xhci_of_match[] = {
 	}, {
 		.compatible = "renesas,xhci-r8a7795",
 		.data = &xhci_plat_renesas_rcar_gen3,
+	}, {
+		.compatible = "renesas,xhci-r8a7796",
+		.data = &xhci_plat_renesas_rcar_r8a7796,
 	}, {
 		.compatible = "renesas,rcar-gen2-xhci",
 		.data = &xhci_plat_renesas_rcar_gen2,
@@ -230,6 +239,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 
 	/* Try to set 64-bit DMA first */
 	if (WARN_ON(!sysdev->dma_mask))
+	if (!pdev->dev.dma_mask)
 		/* Platform did not initialize dma_mask */
 		ret = dma_coerce_mask_and_coherent(sysdev,
 						   DMA_BIT_MASK(64));
@@ -415,6 +425,8 @@ static int xhci_plat_remove(struct platform_device *dev)
 	xhci->xhc_state |= XHCI_STATE_REMOVING;
 
 	device_remove_file(&dev->dev, &dev_attr_config_imod);
+	xhci->xhc_state |= XHCI_STATE_REMOVING;
+
 	usb_remove_hcd(xhci->shared_hcd);
 	/* don't need to notify situation to usb phy at sdm845 */
 	// usb_phy_shutdown(hcd->usb_phy);

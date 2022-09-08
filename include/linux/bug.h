@@ -136,6 +136,13 @@ static inline __must_check bool check_data_corruption(bool v) { return v; }
 	check_data_corruption(({					 \
 		bool corruption = unlikely(condition);			 \
 		if (corruption) {					 \
+/*
+ * Since detected data corruption should stop operation on the affected
+ * structures, this returns false if the corruption condition is found.
+ */
+#define CHECK_DATA_CORRUPTION(condition, fmt, ...)			 \
+	do {								 \
+		if (unlikely(condition)) {				 \
 			if (IS_ENABLED(CONFIG_BUG_ON_DATA_CORRUPTION)) { \
 				pr_err(fmt, ##__VA_ARGS__);		 \
 				BUG();					 \
@@ -144,5 +151,8 @@ static inline __must_check bool check_data_corruption(bool v) { return v; }
 		}							 \
 		corruption;						 \
 	}))
+			return false;					 \
+		}							 \
+	} while (0)
 
 #endif	/* _LINUX_BUG_H */

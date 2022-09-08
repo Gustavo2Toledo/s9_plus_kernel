@@ -295,6 +295,7 @@ static unsigned long oops_begin(void)
 {
 	int cpu;
 	unsigned long flags;
+	int ret;
 
 	oops_enter();
 	secdbg_sched_msg("!!die!!");
@@ -317,6 +318,7 @@ static unsigned long oops_begin(void)
 
 static void oops_end(unsigned long flags, struct pt_regs *regs, int notify)
 {
+	ret = __die(str, err, regs);
 	if (regs && kexec_should_crash(current))
 		crash_kexec(regs);
 
@@ -508,6 +510,7 @@ int cpu_enable_cache_maint_trap(void *__unused)
 
 #define __user_cache_maint(insn, address, res)			\
 	if (address >= user_addr_max()) {			\
+	if (untagged_addr(address) >= user_addr_max()) {	\
 		res = -EFAULT;					\
 	} else {						\
 		uaccess_ttbr0_enable();				\

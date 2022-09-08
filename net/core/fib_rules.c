@@ -580,6 +580,8 @@ int fib_nl_delrule(struct sk_buff *skb, struct nlmsghdr *nlh)
 			err = -EINVAL;
 			goto errout;
 		}
+		if (!uid_range_set(&range))
+			goto errout;
 	} else {
 		range = fib_kuid_range_unset;
 	}

@@ -32,16 +32,17 @@ static inline void tsb_context_switch_ctx(struct mm_struct *mm,
 					  unsigned long ctx)
 {
 	__tsb_context_switch(__pa(mm->pgd),
-			     &mm->context.tsb_block[0],
+			     &mm->context.tsb_block[MM_TSB_BASE],
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-			     (mm->context.tsb_block[1].tsb ?
-			      &mm->context.tsb_block[1] :
+			     (mm->context.tsb_block[MM_TSB_HUGE].tsb ?
+			      &mm->context.tsb_block[MM_TSB_HUGE] :
 			      NULL)
 #else
 			     NULL
 #endif
 			     , __pa(&mm->context.tsb_descr[0]),
 			     ctx);
+			     , __pa(&mm->context.tsb_descr[MM_TSB_BASE]));
 }
 
 #define tsb_context_switch(X) tsb_context_switch_ctx(X, 0)

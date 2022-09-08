@@ -51,6 +51,7 @@
 #ifndef va_arg
 #include <stdarg.h>
 #endif
+#include <stdarg.h>
 
 /* Configuration specific to Intel 64-bit C compiler */
 

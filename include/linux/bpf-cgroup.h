@@ -21,6 +21,7 @@ struct cgroup_bpf {
 	 */
 	struct bpf_prog *prog[MAX_BPF_ATTACH_TYPE];
 	struct bpf_prog *effective[MAX_BPF_ATTACH_TYPE];
+	struct bpf_prog __rcu *effective[MAX_BPF_ATTACH_TYPE];
 	bool disallow_override[MAX_BPF_ATTACH_TYPE];
 };
 
@@ -60,6 +61,44 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 						BPF_CGROUP_INET_EGRESS); \
 	}								\
 	__ret;								\
+int __cgroup_bpf_run_filter_skb(struct sock *sk,
+				struct sk_buff *skb,
+				enum bpf_attach_type type);
+
+int __cgroup_bpf_run_filter_sk(struct sock *sk,
+			       enum bpf_attach_type type);
+
+/* Wrappers for __cgroup_bpf_run_filter_skb() guarded by cgroup_bpf_enabled. */
+#define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk, skb)			      \
+({									      \
+	int __ret = 0;							      \
+	if (cgroup_bpf_enabled)						      \
+		__ret = __cgroup_bpf_run_filter_skb(sk, skb,		      \
+						    BPF_CGROUP_INET_INGRESS); \
+									      \
+	__ret;								      \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk && sk == skb->sk) {		       \
+		typeof(sk) __sk = sk_to_full_sk(sk);			       \
+		if (sk_fullsock(__sk))					       \
+			__ret = __cgroup_bpf_run_filter_skb(__sk, skb,	       \
+						      BPF_CGROUP_INET_EGRESS); \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET_SOCK(sk)				       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sk(sk,			       \
+						 BPF_CGROUP_INET_SOCK_CREATE); \
+	}								       \
+	__ret;								       \
 })
 
 #else
@@ -71,6 +110,7 @@ static inline void cgroup_bpf_inherit(struct cgroup *cgrp,
 
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
 
 #endif /* CONFIG_CGROUP_BPF */
 

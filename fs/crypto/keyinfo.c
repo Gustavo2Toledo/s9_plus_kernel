@@ -18,6 +18,7 @@
 #include <crypto/skcipher.h>
 #include "fscrypt_private.h"
 #include "fscrypt_ice.h"
+#include "fscrypt_private.h"
 
 static struct crypto_shash *essiv_hash_tfm;
 
@@ -132,6 +133,43 @@ invalid:
 	up_read(&key->sem);
 	key_put(key);
 	return ERR_PTR(-ENOKEY);
+	memcpy(full_key_descriptor, prefix, prefix_size);
+	sprintf(full_key_descriptor + prefix_size,
+			"%*phN", FS_KEY_DESCRIPTOR_SIZE,
+			ctx->master_key_descriptor);
+	full_key_descriptor[full_key_len - 1] = '\0';
+	keyring_key = request_key(&key_type_logon, full_key_descriptor, NULL);
+	kfree(full_key_descriptor);
+	if (IS_ERR(keyring_key))
+		return PTR_ERR(keyring_key);
+	down_read(&keyring_key->sem);
+
+	if (keyring_key->type != &key_type_logon) {
+		printk_once(KERN_WARNING
+				"%s: key type must be logon\n", __func__);
+		res = -ENOKEY;
+		goto out;
+	}
+	ukp = user_key_payload(keyring_key);
+	if (ukp->datalen != sizeof(struct fscrypt_key)) {
+		res = -EINVAL;
+		goto out;
+	}
+	master_key = (struct fscrypt_key *)ukp->data;
+	BUILD_BUG_ON(FS_AES_128_ECB_KEY_SIZE != FS_KEY_DERIVATION_NONCE_SIZE);
+
+	if (master_key->size != FS_AES_256_XTS_KEY_SIZE) {
+		printk_once(KERN_WARNING
+				"%s: key size incorrect: %d\n",
+				__func__, master_key->size);
+		res = -ENOKEY;
+		goto out;
+	}
+	res = derive_key_aes(ctx->nonce, master_key->raw, raw_key);
+out:
+	up_read(&keyring_key->sem);
+	key_put(keyring_key);
+	return res;
 }
 
 static struct fscrypt_mode available_modes[] = {
@@ -523,6 +561,7 @@ static void put_crypt_info(struct fscrypt_info *ci)
 		crypto_free_cipher(ci->ci_essiv_tfm);
 	}
 	memset(ci, 0, sizeof(*ci)); /* sanitizes ->ci_raw_key */
+	crypto_free_skcipher(ci->ci_ctfm);
 	kmem_cache_free(fscrypt_info_cachep, ci);
 }
 
@@ -540,6 +579,9 @@ int fscrypt_get_encryption_info(struct inode *inode)
 	res = fscrypt_initialize(inode->i_sb->s_cop->flags);
 	if (res)
 		return res;
+
+	if (!inode->i_sb->s_cop->get_context)
+		return -EOPNOTSUPP;
 
 	res = inode->i_sb->s_cop->get_context(inode, &ctx, sizeof(ctx));
 	if (res < 0) {
@@ -573,6 +615,9 @@ int fscrypt_get_encryption_info(struct inode *inode)
 	memcpy(crypt_info->ci_master_key_descriptor, ctx.master_key_descriptor,
 	       FS_KEY_DESCRIPTOR_SIZE);
 	memcpy(crypt_info->ci_nonce, ctx.nonce, FS_KEY_DERIVATION_NONCE_SIZE);
+	crypt_info->ci_ctfm = NULL;
+	memcpy(crypt_info->ci_master_key, ctx.master_key_descriptor,
+				sizeof(crypt_info->ci_master_key));
 
 	mode = select_encryption_mode(crypt_info, inode);
 	if (IS_ERR(mode)) {
@@ -594,6 +639,11 @@ int fscrypt_get_encryption_info(struct inode *inode)
 	res = find_and_derive_key(inode, &ctx, raw_key, mode);
 	if (res)
 		goto out;
+	if (fscrypt_dummy_context_enabled(inode)) {
+		memset(raw_key, 0x42, keysize/2);
+		memset(raw_key+keysize/2, 0x24, keysize - (keysize/2));
+		goto got_key;
+	}
 
 	if (is_private_data_mode(crypt_info)) {
 		if (!fscrypt_is_ice_capable(inode->i_sb)) {

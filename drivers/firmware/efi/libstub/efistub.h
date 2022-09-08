@@ -16,6 +16,14 @@
 #undef __init
 
 extern int __pure nokaslr(void);
+/*
+ * Allow the platform to override the allocation granularity: this allows
+ * systems that have the capability to run with a larger page size to deal
+ * with the allocations for initrd and fdt more efficiently.
+ */
+#ifndef EFI_ALLOC_ALIGN
+#define EFI_ALLOC_ALIGN		EFI_PAGE_SIZE
+#endif
 
 void efi_char16_printk(efi_system_table_t *, efi_char16_t *);
 
@@ -55,5 +63,7 @@ efi_status_t efi_random_alloc(efi_system_table_t *sys_table_arg,
 			      unsigned long *addr, unsigned long random_seed);
 
 efi_status_t check_platform_features(efi_system_table_t *sys_table_arg);
+
+efi_status_t efi_random_get_seed(efi_system_table_t *sys_table_arg);
 
 #endif

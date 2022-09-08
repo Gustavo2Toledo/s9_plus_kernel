@@ -251,16 +251,15 @@ int msm_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	}
 
 	/* We don't use vmf->pgoff since that has the fake offset: */
-	pgoff = ((unsigned long)vmf->virtual_address -
-			vma->vm_start) >> PAGE_SHIFT;
+	pgoff = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
 	pfn = page_to_pfn(pages[pgoff]);
 
 	VERB("Inserting %pK pfn %lx, pa %lx", vmf->virtual_address,
+	VERB("Inserting %p pfn %lx, pa %lx", (void *)vmf->address,
 			pfn, pfn << PAGE_SHIFT);
 
-	ret = vm_insert_mixed(vma, (unsigned long)vmf->virtual_address,
-			__pfn_to_pfn_t(pfn, PFN_DEV));
+	ret = vm_insert_mixed(vma, vmf->address, __pfn_to_pfn_t(pfn, PFN_DEV));
 
 out_unlock:
 	mutex_unlock(&dev->struct_mutex);
@@ -381,6 +380,11 @@ static struct msm_gem_vma *obj_get_domain(struct drm_gem_object *obj,
 	list_for_each_entry(domain, &msm_obj->domains, list) {
 		if (domain->aspace == aspace)
 			return domain;
+	for (id = 0; id < ARRAY_SIZE(msm_obj->domain); id++) {
+		if (!priv->aspace[id])
+			continue;
+		msm_gem_unmap_vma(priv->aspace[id],
+				&msm_obj->domain[id], msm_obj->sgt);
 	}
 
 	return NULL;
@@ -395,6 +399,8 @@ static struct msm_gem_vma *obj_get_domain(struct drm_gem_object *obj,
  */
 int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 		struct msm_gem_address_space *aspace, uint32_t *iova)
+int msm_gem_get_iova_locked(struct drm_gem_object *obj, int id,
+		uint64_t *iova)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 	struct page **pages;
@@ -422,6 +428,11 @@ int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 		if (IS_ERR(pages)) {
 			obj_remove_domain(domain);
 			return PTR_ERR(pages);
+		if (iommu_present(&platform_bus_type)) {
+			ret = msm_gem_map_vma(priv->aspace[id], &msm_obj->domain[id],
+					msm_obj->sgt, obj->size >> PAGE_SHIFT);
+		} else {
+			msm_obj->domain[id].iova = physaddr(obj);
 		}
 
 		ret = msm_gem_map_vma(aspace, domain, msm_obj->sgt,
@@ -443,6 +454,7 @@ int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 /* get iova, taking a reference.  Should have a matching put */
 int msm_gem_get_iova(struct drm_gem_object *obj,
 		struct msm_gem_address_space *aspace, uint32_t *iova)
+int msm_gem_get_iova(struct drm_gem_object *obj, int id, uint64_t *iova)
 {
 	struct msm_gem_vma *domain;
 	int ret;
@@ -464,6 +476,7 @@ int msm_gem_get_iova(struct drm_gem_object *obj,
  */
 uint32_t msm_gem_iova(struct drm_gem_object *obj,
 		struct msm_gem_address_space *aspace)
+uint64_t msm_gem_iova(struct drm_gem_object *obj, int id)
 {
 	struct msm_gem_vma *domain = obj_get_domain(obj, aspace);
 
@@ -681,7 +694,7 @@ int msm_gem_sync_object(struct drm_gem_object *obj,
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 	struct reservation_object_list *fobj;
-	struct fence *fence;
+	struct dma_fence *fence;
 	int i, ret;
 
 	if (!exclusive) {
@@ -700,7 +713,7 @@ int msm_gem_sync_object(struct drm_gem_object *obj,
 		fence = reservation_object_get_excl(msm_obj->resv);
 		/* don't need to wait on our own fences, since ring is fifo */
 		if (fence && (fence->context != fctx->context)) {
-			ret = fence_wait(fence, true);
+			ret = dma_fence_wait(fence, true);
 			if (ret)
 				return ret;
 		}
@@ -713,7 +726,7 @@ int msm_gem_sync_object(struct drm_gem_object *obj,
 		fence = rcu_dereference_protected(fobj->shared[i],
 						reservation_object_held(msm_obj->resv));
 		if (fence->context != fctx->context) {
-			ret = fence_wait(fence, true);
+			ret = dma_fence_wait(fence, true);
 			if (ret)
 				return ret;
 		}
@@ -723,7 +736,7 @@ int msm_gem_sync_object(struct drm_gem_object *obj,
 }
 
 void msm_gem_move_to_active(struct drm_gem_object *obj,
-		struct msm_gpu *gpu, bool exclusive, struct fence *fence)
+		struct msm_gpu *gpu, bool exclusive, struct dma_fence *fence)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 	WARN_ON(msm_obj->madv != MSM_MADV_WILLNEED);
@@ -776,10 +789,10 @@ int msm_gem_cpu_fini(struct drm_gem_object *obj)
 }
 
 #ifdef CONFIG_DEBUG_FS
-static void describe_fence(struct fence *fence, const char *type,
+static void describe_fence(struct dma_fence *fence, const char *type,
 		struct seq_file *m)
 {
-	if (!fence_is_signaled(fence))
+	if (!dma_fence_is_signaled(fence))
 		seq_printf(m, "\t%9s: %s %s seq %u\n", type,
 				fence->ops->get_driver_name(fence),
 				fence->ops->get_timeline_name(fence),
@@ -792,9 +805,11 @@ void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m)
 	struct msm_gem_vma *domain;
 	struct reservation_object *robj = msm_obj->resv;
 	struct reservation_object_list *fobj;
-	struct fence *fence;
+	struct msm_drm_private *priv = obj->dev->dev_private;
+	struct dma_fence *fence;
 	uint64_t off = drm_vma_node_start(&obj->vma_node);
 	const char *madv;
+	unsigned id;
 
 	WARN_ON(!mutex_is_locked(&obj->dev->struct_mutex));
 
@@ -813,9 +828,15 @@ void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m)
 
 	seq_printf(m, "%08x: %c %2d (%2d) %08llx %pK %zu%s\n",
 
+	seq_printf(m, "%08x: %c %2d (%2d) %08llx %p\t",
 			msm_obj->flags, is_active(msm_obj) ? 'A' : 'I',
 			obj->name, obj->refcount.refcount.counter,
-			off, msm_obj->vaddr, obj->size, madv);
+			off, msm_obj->vaddr);
+
+	for (id = 0; id < priv->num_aspaces; id++)
+		seq_printf(m, " %08llx", msm_obj->domain[id].iova);
+
+	seq_printf(m, " %zu%s\n", obj->size, madv);
 
 	rcu_read_lock();
 	fobj = rcu_dereference(robj->fence);
@@ -965,6 +986,8 @@ static int msm_gem_new_impl(struct drm_device *dev,
 		if (!IS_ERR(domain))
 			msm_obj->vram_node = &domain->node;
 	}
+	if (use_vram)
+		msm_obj->vram_node = &msm_obj->domain[0].node;
 
 	msm_obj->flags = flags;
 	msm_obj->madv = MSM_MADV_WILLNEED;

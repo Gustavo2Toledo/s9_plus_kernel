@@ -23,6 +23,43 @@
 #include <linux/spinlock.h>
 #include <asm/qrwlock.h>
 
+/*
+ * This internal data structure is used for optimizing access to some of
+ * the subfields within the atomic_t cnts.
+ */
+struct __qrwlock {
+	union {
+		atomic_t cnts;
+		struct {
+#ifdef __LITTLE_ENDIAN
+			u8 wmode;	/* Writer mode   */
+			u8 rcnts[3];	/* Reader counts */
+#else
+			u8 rcnts[3];	/* Reader counts */
+			u8 wmode;	/* Writer mode   */
+#endif
+		};
+	};
+	arch_spinlock_t	lock;
+};
+
+/**
+ * rspin_until_writer_unlock - inc reader count & spin until writer is gone
+ * @lock  : Pointer to queue rwlock structure
+ * @writer: Current queue rwlock writer status byte
+ *
+ * In interrupt context or at the head of the queue, the reader will just
+ * increment the reader count & wait until the writer releases the lock.
+ */
+static __always_inline void
+rspin_until_writer_unlock(struct qrwlock *lock, u32 cnts)
+{
+	while ((cnts & _QW_WMASK) == _QW_LOCKED) {
+		cpu_relax();
+		cnts = atomic_read_acquire(&lock->cnts);
+	}
+}
+
 /**
  * queued_read_lock_slowpath - acquire read lock of a queue rwlock
  * @lock: Pointer to queue rwlock structure
@@ -86,6 +123,19 @@ void queued_write_lock_slowpath(struct qrwlock *lock)
 		atomic_cond_read_acquire(&lock->cnts, VAL == _QW_WAITING);
 	} while (atomic_cmpxchg_relaxed(&lock->cnts, _QW_WAITING,
 					_QW_LOCKED) != _QW_WAITING);
+		cpu_relax();
+	}
+
+	/* When no more readers, set the locked flag */
+	for (;;) {
+		cnts = atomic_read(&lock->cnts);
+		if ((cnts == _QW_WAITING) &&
+		    (atomic_cmpxchg_acquire(&lock->cnts, _QW_WAITING,
+					    _QW_LOCKED) == _QW_WAITING))
+			break;
+
+		cpu_relax();
+	}
 unlock:
 	arch_spin_unlock(&lock->wait_lock);
 }

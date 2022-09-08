@@ -368,12 +368,26 @@ static void pcie_aspm_cap_init(struct pcie_link_state *link, int blacklist)
 		return;
 	}
 
-	/* Configure common clock before checking latencies */
-	pcie_aspm_configure_common_clock(link);
-
 	/* Get upstream/downstream components' register state */
 	pcie_get_aspm_reg(parent, &upreg);
 	child = list_entry(linkbus->devices.next, struct pci_dev, bus_list);
+	pcie_get_aspm_reg(child, &dwreg);
+
+	/*
+	 * If ASPM not supported, don't mess with the clocks and link,
+	 * bail out now.
+	 */
+	if (!(upreg.support & dwreg.support))
+		return;
+
+	/* Configure common clock before checking latencies */
+	pcie_aspm_configure_common_clock(link);
+
+	/*
+	 * Re-read upstream/downstream components' register state
+	 * after clock configuration
+	 */
+	pcie_get_aspm_reg(parent, &upreg);
 	pcie_get_aspm_reg(child, &dwreg);
 
 	/*
@@ -543,6 +557,7 @@ static struct pcie_link_state *alloc_pcie_link_state(struct pci_dev *pdev)
 
 	/*
 	 * Root Ports and PCI/PCI-X to PCIe Bridges are roots of PCIe
+
 	 * hierarchies.  Note that some PCIe host implementations omit
 	 * the root ports entirely, in which case a downstream port on
 	 * a switch may become the root of the link state chain for all
@@ -551,6 +566,10 @@ static struct pcie_link_state *alloc_pcie_link_state(struct pci_dev *pdev)
 	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT ||
 	    pci_pcie_type(pdev) == PCI_EXP_TYPE_PCIE_BRIDGE ||
 	    !pdev->bus->parent->self) {
+	 * hierarchies.
+	 */
+	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT ||
+	    pci_pcie_type(pdev) == PCI_EXP_TYPE_PCIE_BRIDGE) {
 		link->root = link;
 	} else {
 		struct pcie_link_state *parent;
@@ -915,8 +934,8 @@ static ssize_t clk_ctl_store(struct device *dev,
 	return n;
 }
 
-static DEVICE_ATTR(link_state, 0644, link_state_show, link_state_store);
-static DEVICE_ATTR(clk_ctl, 0644, clk_ctl_show, clk_ctl_store);
+static DEVICE_ATTR_RW(link_state);
+static DEVICE_ATTR_RW(clk_ctl);
 
 static char power_group[] = "power";
 void pcie_aspm_create_sysfs_dev_files(struct pci_dev *pdev)

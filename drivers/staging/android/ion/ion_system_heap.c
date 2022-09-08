@@ -34,6 +34,8 @@
 static gfp_t high_order_gfp_flags = (GFP_HIGHUSER | __GFP_NOWARN |
 				     __GFP_NORETRY) & ~__GFP_RECLAIM;
 static gfp_t low_order_gfp_flags  = (GFP_HIGHUSER | __GFP_NOWARN);
+static gfp_t low_order_gfp_flags  = GFP_HIGHUSER | __GFP_ZERO;
+static const unsigned int orders[] = {8, 4, 0};
 
 #ifndef CONFIG_ALLOC_BUFFERS_IN_4K_CHUNKS
 #if defined(CONFIG_IOMMU_IO_PGTABLE_ARMV7S)

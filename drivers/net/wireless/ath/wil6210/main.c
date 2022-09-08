@@ -896,7 +896,6 @@ static void wil_collect_fw_info(struct wil6210_priv *wil)
 	int rc;
 
 	wil_refresh_fw_capabilities(wil);
-
 	rc = wmi_get_mgmt_retry(wil, &retry_short);
 	if (!rc) {
 		wiphy->retry_short = retry_short;
@@ -1285,6 +1284,10 @@ int wil_reset(struct wil6210_priv *wil, bool load_fw)
 	wil_dbg_misc(wil, "wil->status (0x%lx)\n", *wil->status);
 	mutex_unlock(&wil->wmi_mutex);
 
+	mutex_lock(&wil->p2p_wdev_mutex);
+	wil_abort_scan(wil, false);
+	mutex_unlock(&wil->p2p_wdev_mutex);
+
 	wil_mask_irq(wil);
 
 	wmi_event_flush(wil);
@@ -1387,6 +1390,8 @@ int wil_reset(struct wil6210_priv *wil, bool load_fw)
 		if (wil->snr_thresh.enabled)
 			wmi_set_snr_thresh(wil, wil->snr_thresh.omni,
 					   wil->snr_thresh.direct);
+
+		wil_collect_fw_info(wil);
 
 		if (wil->platform_ops.notify) {
 			rc = wil->platform_ops.notify(wil->platform_handle,

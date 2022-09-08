@@ -1,7 +1,6 @@
 # Makefile for staging directory
 
 obj-y				+= media/
-obj-$(CONFIG_SLICOSS)		+= slicoss/
 obj-$(CONFIG_PRISM2_USB)	+= wlan-ng/
 obj-$(CONFIG_COMEDI)		+= comedi/
 obj-$(CONFIG_FB_OLPC_DCON)	+= olpc_dcon/
@@ -45,3 +44,4 @@ obj-$(CONFIG_GREYBUS)		+= greybus/
 obj-$(CONFIG_BCM2708_VCHIQ)	+= vc04_services/
 obj-$(CONFIG_SEC_STI)		+= sti/
 obj-$(CONFIG_VNSWAP)		+= vnswap/
+obj-$(CONFIG_BCM2835_VCHIQ)	+= vc04_services/

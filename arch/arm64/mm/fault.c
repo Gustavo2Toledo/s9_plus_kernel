@@ -53,6 +53,14 @@ struct fault_info {
 	const char *name;
 };
 
+struct fault_info {
+	int	(*fn)(unsigned long addr, unsigned int esr,
+		      struct pt_regs *regs);
+	int	sig;
+	int	code;
+	const char *name;
+};
+
 static const struct fault_info fault_info[];
 
 static inline const struct fault_info *esr_to_fault_info(unsigned int esr)
@@ -272,6 +280,7 @@ static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 static void do_bad_area(unsigned long addr, unsigned int esr, struct pt_regs *regs)
 {
 	struct task_struct *tsk = current;
+	struct mm_struct *mm = tsk->active_mm;
 	const struct fault_info *inf;
 
 	/*
@@ -283,6 +292,7 @@ static void do_bad_area(unsigned long addr, unsigned int esr, struct pt_regs *re
 		__do_user_fault(tsk, addr, esr, inf->sig, inf->code, regs);
 	} else
 		__do_kernel_fault(addr, esr, regs);
+		__do_kernel_fault(mm, addr, esr, regs);
 }
 
 #define VM_FAULT_BADMAP		0x010000
@@ -378,6 +388,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	}
 
 	if (addr < TASK_SIZE && is_permission_fault(esr, regs)) {
+	if (addr < USER_DS && is_permission_fault(esr, regs)) {
 		/* regs->orig_addr_limit may be 0 if we entered from EL0 */
 		if (regs->orig_addr_limit == KERNEL_DS)
 			die("Accessing user space memory with fs=KERNEL_DS", regs, esr);

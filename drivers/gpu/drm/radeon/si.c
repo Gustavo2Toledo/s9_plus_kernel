@@ -114,6 +114,9 @@ MODULE_FIRMWARE("radeon/hainan_mc.bin");
 MODULE_FIRMWARE("radeon/hainan_rlc.bin");
 MODULE_FIRMWARE("radeon/hainan_smc.bin");
 MODULE_FIRMWARE("radeon/hainan_k_smc.bin");
+MODULE_FIRMWARE("radeon/banks_k_2_smc.bin");
+
+MODULE_FIRMWARE("radeon/si58_mc.bin");
 
 MODULE_FIRMWARE("radeon/si58_mc.bin");
 
@@ -1653,6 +1656,7 @@ static int si_init_microcode(struct radeon_device *rdev)
 	int new_fw = 0;
 	bool new_smc = false;
 	bool si58_fw = false;
+	bool banks2_fw = false;
 
 	DRM_DEBUG("\n");
 
@@ -1733,7 +1737,11 @@ static int si_init_microcode(struct radeon_device *rdev)
 		      (rdev->pdev->device == 0x6667))) ||
 		    ((rdev->pdev->revision == 0xc3) &&
 		     (rdev->pdev->device == 0x6665)))
+		      (rdev->pdev->device == 0x6667))))
 			new_smc = true;
+		else if ((rdev->pdev->revision == 0xc3) &&
+			 (rdev->pdev->device == 0x6665))
+			banks2_fw = true;
 		new_chip_name = "hainan";
 		pfp_req_size = SI_PFP_UCODE_SIZE * 4;
 		me_req_size = SI_PM4_UCODE_SIZE * 4;
@@ -1886,7 +1894,9 @@ static int si_init_microcode(struct radeon_device *rdev)
 		}
 	}
 
-	if (new_smc)
+	if (banks2_fw)
+		snprintf(fw_name, sizeof(fw_name), "radeon/banks_k_2_smc.bin");
+	else if (new_smc)
 		snprintf(fw_name, sizeof(fw_name), "radeon/%s_k_smc.bin", new_chip_name);
 	else
 		snprintf(fw_name, sizeof(fw_name), "radeon/%s_smc.bin", new_chip_name);
@@ -7865,7 +7875,7 @@ static void si_program_aspm(struct radeon_device *rdev)
 	}
 }
 
-int si_vce_send_vcepll_ctlreq(struct radeon_device *rdev)
+static int si_vce_send_vcepll_ctlreq(struct radeon_device *rdev)
 {
 	unsigned i;
 

@@ -162,6 +162,7 @@ static struct tps65086_regulator regulators[] = {
 };
 
 static int tps65086_of_parse_cb(struct device_node *node,
+static int tps65086_of_parse_cb(struct device_node *dev,
 				const struct regulator_desc *desc,
 				struct regulator_config *config)
 {
@@ -169,6 +170,7 @@ static int tps65086_of_parse_cb(struct device_node *node,
 
 	/* Check for 25mV step mode */
 	if (of_property_read_bool(node, "ti,regulator-step-size-25mv")) {
+	if (of_property_read_bool(config->of_node, "ti,regulator-step-size-25mv")) {
 		switch (desc->id) {
 		case BUCK1:
 		case BUCK2:

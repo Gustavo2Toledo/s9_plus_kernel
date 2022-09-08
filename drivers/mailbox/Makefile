@@ -33,3 +33,5 @@ obj-$(CONFIG_BCM_PDC_MBOX)	+= bcm-pdc-mailbox.o
 obj-$(CONFIG_QTI_RPMH_MBOX)	+= qcom-rpmh-mailbox.o
 
 obj-$(CONFIG_MSM_QMP)	+= msm_qmp.o
+
+obj-$(CONFIG_TEGRA_HSP_MBOX)	+= tegra-hsp.o

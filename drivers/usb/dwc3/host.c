@@ -56,6 +56,9 @@ out:
 int dwc3_host_init(struct dwc3 *dwc)
 {
 	struct property_entry	props[NUMBER_OF_PROPS];
+int dwc3_host_init(struct dwc3 *dwc)
+{
+	struct property_entry	props[3];
 	struct platform_device	*xhci;
 	int			ret, irq;
 	struct resource		*res;
@@ -154,6 +157,11 @@ int dwc3_host_init(struct dwc3 *dwc)
 	}
 
 	return 0;
+err2:
+	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
+			  dev_name(dwc->dev));
+	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
+			  dev_name(dwc->dev));
 err1:
 	platform_device_put(xhci);
 	return ret;

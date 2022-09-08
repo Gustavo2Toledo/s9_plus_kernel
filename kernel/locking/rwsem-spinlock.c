@@ -235,6 +235,8 @@ out_nolock:
 	list_del(&waiter.list);
 	if (!list_empty(&sem->wait_list) && sem->count >= 0)
 		__rwsem_do_wake(sem, 0);
+	if (!list_empty(&sem->wait_list))
+		__rwsem_do_wake(sem, 1);
 	raw_spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	return -EINTR;

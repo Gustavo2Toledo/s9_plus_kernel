@@ -190,6 +190,7 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	name = find_supply_name(cpu_dev);
 	if (name) {
 		opp_table = dev_pm_opp_set_regulator(cpu_dev, name);
+		opp_table = dev_pm_opp_set_regulators(cpu_dev, &name, 1);
 		if (IS_ERR(opp_table)) {
 			ret = PTR_ERR(opp_table);
 			dev_err(cpu_dev, "Failed to set regulator for cpu%d: %d\n",
@@ -243,6 +244,15 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 			dev_err(cpu_dev, "%s: failed to mark OPPs as shared: %d\n",
 				__func__, ret);
 	}
+
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	if (!priv) {
+		ret = -ENOMEM;
+		goto out_free_opp;
+	}
+
+	priv->reg_name = name;
+	priv->opp_table = opp_table;
 
 	ret = dev_pm_opp_init_cpufreq_table(cpu_dev, &freq_table);
 	if (ret) {
@@ -300,6 +310,7 @@ out_free_opp:
 out_put_regulator:
 	if (name)
 		dev_pm_opp_put_regulator(opp_table);
+		dev_pm_opp_put_regulators(opp_table);
 out_put_clk:
 	clk_put(cpu_clk);
 
@@ -316,6 +327,7 @@ static int cpufreq_exit(struct cpufreq_policy *policy)
 		dev_pm_opp_of_cpumask_remove_table(policy->related_cpus);
 	if (priv->reg_name)
 		dev_pm_opp_put_regulator(priv->opp_table);
+		dev_pm_opp_put_regulators(priv->opp_table);
 
 	clk_put(policy->clk);
 	kfree(priv);

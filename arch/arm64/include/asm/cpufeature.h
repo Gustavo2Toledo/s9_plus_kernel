@@ -109,6 +109,7 @@ static inline bool cpu_have_feature(unsigned int num)
 
 /* System capability check for constant caps */
 static inline bool __cpus_have_const_cap(int num)
+static inline bool cpus_have_const_cap(int num)
 {
 	if (num >= ARM64_NCAPS)
 		return false;
@@ -250,6 +251,17 @@ void arm64_set_ssbd_mitigation(bool state);
 #else
 static inline void arm64_set_ssbd_mitigation(bool state) {}
 #endif
+
+static inline bool system_supports_fpsimd(void)
+{
+	return !cpus_have_const_cap(ARM64_HAS_NO_FPSIMD);
+}
+
+static inline bool system_uses_ttbr0_pan(void)
+{
+	return IS_ENABLED(CONFIG_ARM64_SW_TTBR0_PAN) &&
+		!cpus_have_cap(ARM64_HAS_PAN);
+}
 
 #endif /* __ASSEMBLY__ */
 

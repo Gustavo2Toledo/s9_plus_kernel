@@ -263,6 +263,10 @@ static inline void __flush_tlb_all(void)
 	 *
 	 * To avoid this issue, we force PCID off if PGE is off.
 	 */
+	if (boot_cpu_has(X86_FEATURE_PGE))
+		__flush_tlb_global();
+	else
+		__flush_tlb();
 }
 
 static inline void __flush_tlb_one(unsigned long addr)

@@ -16,6 +16,7 @@
 #include <linux/bitops.h>
 #include <linux/ftrace.h>
 #include <linux/init.h>
+#include <linux/ftrace.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/printk.h>

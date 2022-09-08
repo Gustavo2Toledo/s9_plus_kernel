@@ -92,4 +92,6 @@
 
 #define SO_COOKIE		57
 
+#define SCM_TIMESTAMPING_OPT_STATS	54
+
 #endif /* _ASM_SOCKET_H */

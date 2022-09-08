@@ -12,6 +12,12 @@
 #include <linux/string.h>
 #include <linux/mount.h>
 #include "fscrypt_private.h"
+static int inode_has_encryption_context(struct inode *inode)
+{
+	if (!inode->i_sb->s_cop->get_context)
+		return 0;
+	return (inode->i_sb->s_cop->get_context(inode, NULL, 0L) > 0);
+}
 
 /*
  * check whether an encryption policy is consistent with an encryption context
@@ -80,6 +86,9 @@ int fscrypt_ioctl_set_policy(struct file *filp, const void __user *arg)
 	if (copy_from_user(&policy, arg, sizeof(policy)))
 		return -EFAULT;
 
+	if (copy_from_user(&policy, arg, sizeof(policy)))
+		return -EFAULT;
+
 	if (!inode_owner_or_capable(inode))
 		return -EACCES;
 
@@ -104,7 +113,7 @@ int fscrypt_ioctl_set_policy(struct file *filp, const void __user *arg)
 			ret = -ENOTEMPTY;
 		else
 			ret = create_encryption_context_from_policy(inode,
-								    &policy);
+		
 	} else if (ret == sizeof(ctx) &&
 		   is_encryption_context_consistent_with_policy(&ctx,
 								&policy)) {
@@ -113,6 +122,12 @@ int fscrypt_ioctl_set_policy(struct file *filp, const void __user *arg)
 	} else if (ret >= 0 || ret == -ERANGE) {
 		/* The file already uses a different encryption policy. */
 		ret = -EEXIST;
+	} else if (!is_encryption_context_consistent_with_policy(inode,
+								 &policy)) {
+		printk(KERN_WARNING
+		       "%s: Policy inconsistent with encryption context\n",
+		       __func__);
+		ret = -EINVAL;
 	}
 
 	inode_unlock(inode);
@@ -186,6 +201,13 @@ int fscrypt_has_permitted_context(struct inode *parent, struct inode *child)
 
 	/* No restrictions if the parent directory is unencrypted */
 	if (!IS_ENCRYPTED(parent))
+	/* No restrictions on file types which are never encrypted */
+	if (!S_ISREG(child->i_mode) && !S_ISDIR(child->i_mode) &&
+	    !S_ISLNK(child->i_mode))
+		return 1;
+
+	/* no restrictions if the parent directory is not encrypted */
+	if (!parent->i_sb->s_cop->is_encrypted(parent))
 		return 1;
 
 	/* Encrypted directories must not contain unencrypted files */

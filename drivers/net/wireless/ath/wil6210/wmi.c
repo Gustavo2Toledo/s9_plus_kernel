@@ -163,6 +163,30 @@ const struct fw_map talyn_fw_mapping[] = {
 	{0x000000, 0x040000, 0xa38000, "uc_code", false},
 	/* ucode data RAM 32k */
 	{0x800000, 0x808000, 0xa78000, "uc_data", false},
+const struct fw_map fw_mapping[] = {
+	/* FW code RAM 256k */
+	{0x000000, 0x040000, 0x8c0000, "fw_code", true},
+	/* FW data RAM 32k */
+	{0x800000, 0x808000, 0x900000, "fw_data", true},
+	/* periph data 128k */
+	{0x840000, 0x860000, 0x908000, "fw_peri", true},
+	/* various RGF 40k */
+	{0x880000, 0x88a000, 0x880000, "rgf", true},
+	/* AGC table   4k */
+	{0x88a000, 0x88b000, 0x88a000, "AGC_tbl", true},
+	/* Pcie_ext_rgf 4k */
+	{0x88b000, 0x88c000, 0x88b000, "rgf_ext", true},
+	/* mac_ext_rgf 512b */
+	{0x88c000, 0x88c200, 0x88c000, "mac_rgf_ext", true},
+	/* upper area 548k */
+	{0x8c0000, 0x949000, 0x8c0000, "upper", true},
+	/* UCODE areas - accessible by debugfs blobs but not by
+	 * wmi_addr_remap. UCODE areas MUST be added AFTER FW areas!
+	 */
+	/* ucode code RAM 128k */
+	{0x000000, 0x020000, 0x920000, "uc_code", false},
+	/* ucode data RAM 16k */
+	{0x800000, 0x804000, 0x940000, "uc_data", false},
 };
 
 struct fw_map fw_mapping[MAX_FW_MAPPING_TABLE_SIZE];

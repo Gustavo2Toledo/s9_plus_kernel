@@ -335,6 +335,18 @@ static irqreturn_t stmpe_gpio_irq(int irq, void *dev)
 		if (stmpe->partnum != STMPE801)
 			stmpe_reg_write(stmpe, stmpe->regs[STMPE_IDX_GPEDR_MSB]
 					+ i, status[i]);
+		/*
+		 * interrupt status register write has no effect on
+		 * 801/1801/1600, bits are cleared when read.
+		 * Edge detect register is not present on 801/1600/1801
+		 */
+		if (stmpe->partnum != STMPE801 && stmpe->partnum != STMPE1600 &&
+		    stmpe->partnum != STMPE1801) {
+			stmpe_reg_write(stmpe, statmsbreg + i, status[i]);
+			stmpe_reg_write(stmpe,
+					stmpe->regs[STMPE_IDX_GPEDR_MSB] + i,
+					status[i]);
+		}
 	}
 
 	return IRQ_HANDLED;
@@ -411,6 +423,20 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 						     irq,
 						     NULL);
 		}
+		ret =  gpiochip_irqchip_add_nested(&stmpe_gpio->chip,
+						   &stmpe_gpio_irq_chip,
+						   0,
+						   handle_simple_irq,
+						   IRQ_TYPE_NONE);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"could not connect irqchip to gpiochip\n");
+			goto out_disable;
+		}
+
+		gpiochip_set_nested_irqchip(&stmpe_gpio->chip,
+					    &stmpe_gpio_irq_chip,
+					    irq);
 	}
 
 	platform_set_drvdata(pdev, stmpe_gpio);

@@ -186,6 +186,7 @@ module_param(u_ether_rx_pending_thld, uint, 0644);
 
 /* NETWORK DRIVER HOOKUP (to the layer above this driver) */
 
+
 static int ueth_change_mtu(struct net_device *net, int new_mtu)
 {
 	if (new_mtu <= ETH_HLEN || new_mtu > GETHER_MAX_ETH_FRAME_LEN)
@@ -294,6 +295,7 @@ rx_submit(struct eth_dev *dev, struct usb_request *req, gfp_t gfp_flags)
 
 	DBG(dev, "%s: size: %zd\n", __func__, size);
 	skb = alloc_skb(size, gfp_flags);
+	skb = __netdev_alloc_skb(dev->net, size + NET_IP_ALIGN, gfp_flags);
 	if (skb == NULL) {
 		DBG(dev, "no rx skb\n");
 		goto enomem;
@@ -632,12 +634,15 @@ static void tx_complete(struct usb_ep *ep, struct usb_request *req)
 		/* FALLTHROUGH */
 	case -ECONNRESET:		/* unlink */
 	case -ESHUTDOWN:		/* disconnect etc */
+		dev_kfree_skb_any(skb);
 		break;
 	case 0:
 		if (!req->zero)
 			dev->net->stats.tx_bytes += req->actual-1;
 		else
 			dev->net->stats.tx_bytes += req->actual;
+		dev->net->stats.tx_bytes += skb->len;
+		dev_consume_skb_any(skb);
 	}
 	dev->net->stats.tx_packets++;
 
@@ -1391,6 +1396,10 @@ struct eth_dev *gether_setup_name(struct usb_gadget *g,
 
 	/* set operation mode to eth by default */
 	set_bit(RMNET_MODE_LLP_ETH, &dev->flags);
+	
+	/* MTU range: 14 - 15412 */
+	net->min_mtu = ETH_HLEN;
+	net->max_mtu = GETHER_MAX_ETH_FRAME_LEN;
 
 	dev->gadget = g;
 	SET_NETDEV_DEV(net, &g->dev);

@@ -34,5 +34,11 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		bool ignore_crc);
 int __mmc_send_status(struct mmc_card *card, u32 *status,
 				    bool ignore_crc);
+int mmc_switch_status(struct mmc_card *card);
+int __mmc_switch_status(struct mmc_card *card, bool crc_err_fatal);
+int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
+		unsigned int timeout_ms, unsigned char timing,
+		bool use_busy_signal, bool send_status,	bool retry_crc_err);
+
 #endif
 

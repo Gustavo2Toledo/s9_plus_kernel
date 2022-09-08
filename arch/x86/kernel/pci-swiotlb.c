@@ -73,7 +73,7 @@ int __init pci_swiotlb_detect_override(void)
 	if (swiotlb_force == SWIOTLB_FORCE)
 		swiotlb = 1;
 
-	return use_swiotlb;
+	return swiotlb;
 }
 IOMMU_INIT_FINISH(pci_swiotlb_detect_override,
 		  pci_xen_swiotlb_detect,
