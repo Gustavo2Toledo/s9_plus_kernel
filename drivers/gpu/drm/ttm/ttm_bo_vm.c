@@ -54,7 +54,7 @@ static int ttm_bo_vm_fault_idle(struct ttm_buffer_object *bo,
 	/*
 	 * Quick non-stalling check for idle.
 	 */
-	if (fence_is_signaled(bo->moving))
+	if (dma_fence_is_signaled(bo->moving))
 		goto out_clear;
 
 	/*
@@ -71,13 +71,14 @@ static int ttm_bo_vm_fault_idle(struct ttm_buffer_object *bo,
 		(void) fence_wait(bo->moving, true);
 		ttm_bo_unreserve(bo);
 		ttm_bo_unref(&bo);
+		(void) dma_fence_wait(bo->moving, true);
 		goto out_unlock;
 	}
 
 	/*
 	 * Ordinary wait.
 	 */
-	ret = fence_wait(bo->moving, true);
+	ret = dma_fence_wait(bo->moving, true);
 	if (unlikely(ret != 0)) {
 		ret = (ret != -ERESTARTSYS) ? VM_FAULT_SIGBUS :
 			VM_FAULT_NOPAGE;
@@ -85,7 +86,7 @@ static int ttm_bo_vm_fault_idle(struct ttm_buffer_object *bo,
 	}
 
 out_clear:
-	fence_put(bo->moving);
+	dma_fence_put(bo->moving);
 	bo->moving = NULL;
 
 out_unlock:
@@ -104,7 +105,7 @@ static int ttm_bo_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	struct page *page;
 	int ret;
 	int i;
-	unsigned long address = (unsigned long)vmf->virtual_address;
+	unsigned long address = vmf->address;
 	int retval = VM_FAULT_NOPAGE;
 	struct ttm_mem_type_manager *man =
 		&bdev->man[bo->mem.mem_type];

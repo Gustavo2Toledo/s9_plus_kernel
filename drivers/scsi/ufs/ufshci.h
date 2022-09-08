@@ -75,7 +75,6 @@ enum {
 	REG_UIC_COMMAND_ARG_3			= 0x9C,
 
 	UFSHCI_REG_SPACE_SIZE			= 0xA0,
-
 	REG_UFS_CCAP				= 0x100,
 	REG_UFS_CRYPTOCAP			= 0x104,
 
@@ -92,6 +91,8 @@ enum {
 	MASK_UIC_DME_TEST_MODE_SUPPORT		= 0x04000000,
 	MASK_CRYPTO_SUPPORT			= 0x10000000,
 };
+
+#define UFS_MASK(mask, offset)		((mask) << (offset))
 
 /* UFS Version 08h */
 #define MINOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 0)

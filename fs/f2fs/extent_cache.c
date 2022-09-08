@@ -312,6 +312,11 @@ static void __drop_largest_extent(struct extent_tree *et,
 			fofs + len > et->largest.fofs) {
 		et->largest.len = 0;
 		et->largest_updated = true;
+	struct extent_info *largest = &F2FS_I(inode)->extent_tree->largest;
+
+	if (fofs < largest->fofs + largest->len && fofs + len > largest->fofs) {
+		largest->len = 0;
+		f2fs_mark_inode_dirty_sync(inode, true);
 	}
 }
 

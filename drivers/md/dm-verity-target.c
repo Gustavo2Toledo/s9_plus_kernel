@@ -1116,6 +1116,7 @@ retry_dev2:
 			goto retry_dev2;
 		}
 		ti->error = "Data device lookup failed";
+		ti->error = "Hash device lookup failed";
 		goto bad;
 	}
 

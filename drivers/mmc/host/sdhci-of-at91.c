@@ -134,6 +134,10 @@ static const struct sdhci_ops sdhci_at91_sama5d2_ops = {
 	.set_clock		= sdhci_at91_set_clock,
 	.set_bus_width		= sdhci_set_bus_width,
 	.reset			= sdhci_at91_reset,
+static const struct sdhci_ops sdhci_at91_sama5d2_ops = {
+	.set_clock		= sdhci_at91_set_clock,
+	.set_bus_width		= sdhci_set_bus_width,
+	.reset			= sdhci_reset,
 	.set_uhs_signaling	= sdhci_at91_set_uhs_signaling,
 	.set_power		= sdhci_at91_set_power,
 };
@@ -146,6 +150,7 @@ static const struct of_device_id sdhci_at91_dt_match[] = {
 	{ .compatible = "atmel,sama5d2-sdhci", .data = &soc_data_sama5d2 },
 	{}
 };
+MODULE_DEVICE_TABLE(of, sdhci_at91_dt_match);
 
 #ifdef CONFIG_PM
 static int sdhci_at91_runtime_suspend(struct device *dev)

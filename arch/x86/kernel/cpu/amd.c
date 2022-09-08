@@ -336,6 +336,7 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
 		cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
 
 		node_id  = ecx & 0xff;
+		smp_num_siblings = ((ebx >> 8) & 0xff) + 1;
 
 		if (c->x86 == 0x15)
 			c->cu_id = ebx & 0xff;
@@ -376,6 +377,10 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
 	if (nodes_per_socket > 1) {
 		set_cpu_cap(c, X86_FEATURE_AMD_DCM);
 		legacy_fixup_core_id(c);
+		cus_per_node = c->x86_max_cores / nodes_per_socket;
+
+		/* core id has to be in the [0 .. cores_per_node - 1] range */
+		c->cpu_core_id %= cus_per_node;
 	}
 }
 
@@ -396,6 +401,7 @@ static void amd_detect_cmp(struct cpuinfo_x86 *c)
 	/* use socket ID also for last level cache */
 	per_cpu(cpu_llc_id, cpu) = c->phys_proc_id;
 	amd_get_topology(c);
+#endif
 }
 
 u16 amd_get_nb_id(int cpu)

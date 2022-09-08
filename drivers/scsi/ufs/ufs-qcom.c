@@ -1473,6 +1473,7 @@ static int ufs_qcom_apply_dev_quirks(struct ufs_hba *hba)
 	int err = 0;
 
 	if (hba->dev_info.quirks & UFS_DEVICE_QUIRK_HOST_PA_SAVECONFIGTIME)
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_HOST_PA_SAVECONFIGTIME)
 		err = ufs_qcom_quirk_host_pa_saveconfigtime(hba);
 
 	return err;
@@ -1566,11 +1567,13 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
  * @is_gating_context: If true then it means this function is called from
  * aggressive clock gating context and we may only need to gate off important
  * clocks. If false then make sure to gate off all clocks.
+ * @status: PRE_CHANGE or POST_CHANGE notify
  *
  * Returns 0 on success, non-zero on failure.
  */
 static int ufs_qcom_setup_clocks(struct ufs_hba *hba, bool on,
 				 bool is_gating_context)
+				 enum ufs_notify_change_status status)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int err;
@@ -1583,18 +1586,9 @@ static int ufs_qcom_setup_clocks(struct ufs_hba *hba, bool on,
 	if (!host)
 		return 0;
 
-	if (on) {
-		err = ufs_qcom_phy_enable_iface_clk(host->generic_phy);
-		if (err)
-			goto out;
+	if (on && (status == POST_CHANGE)) {
+		phy_power_on(host->generic_phy);
 
-		err = ufs_qcom_phy_enable_ref_clk(host->generic_phy);
-		if (err) {
-			dev_err(hba->dev, "%s enable phy ref clock failed, err=%d\n",
-				__func__, err);
-			ufs_qcom_phy_disable_iface_clk(host->generic_phy);
-			goto out;
-		}
 		/* enable the device ref clock for HS mode*/
 		if (ufshcd_is_hs_mode(&hba->pwr_info))
 			ufs_qcom_dev_ref_clk_ctrl(host, true);
@@ -1623,6 +1617,23 @@ static int ufs_qcom_setup_clocks(struct ufs_hba *hba, bool on,
 	}
 
 out:
+	} else if (!on && (status == PRE_CHANGE)) {
+		if (!ufs_qcom_is_link_active(hba)) {
+			/* disable device ref_clk */
+			ufs_qcom_dev_ref_clk_ctrl(host, false);
+
+			/* powering off PHY during aggressive clk gating */
+			phy_power_off(host->generic_phy);
+		}
+
+		vote = host->bus_vote.min_bw_vote;
+	}
+
+	err = ufs_qcom_set_bus_vote(host, vote);
+	if (err)
+		dev_err(hba->dev, "%s: set bus vote failed %d\n",
+				__func__, err);
+
 	return err;
 }
 
@@ -2176,10 +2187,11 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		dev_warn(dev, "%s: required phy device. hasn't probed yet. err = %d\n",
 			__func__, err);
 		goto out_host_free;
+		goto out_variant_clear;
 	} else if (IS_ERR(host->generic_phy)) {
 		err = PTR_ERR(host->generic_phy);
 		dev_err(dev, "%s: PHY get failed %d\n", __func__, err);
-		goto out;
+		goto out_variant_clear;
 	}
 
 	err = ufs_qcom_pm_qos_init(host);
@@ -2191,7 +2203,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	err = ufs_qcom_bus_register(host);
 	if (err)
-		goto out_host_free;
+		goto out_variant_clear;
 
 	ufs_qcom_get_controller_revision(hba, &host->hw_ver.major,
 		&host->hw_ver.minor, &host->hw_ver.step);
@@ -2251,6 +2263,10 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	ufs_qcom_set_bus_vote(hba, true);
 	ufs_qcom_setup_clocks(hba, true, false);
+	ufs_qcom_setup_clocks(hba, true, POST_CHANGE);
+
+	if (hba->dev->id < MAX_UFS_QCOM_HOSTS)
+		ufs_qcom_hosts[hba->dev->id] = host;
 
 	host->dbg_print_en |= UFS_QCOM_DEFAULT_DBG_PRINT_EN;
 	ufs_qcom_get_default_testbus_cfg(host);
@@ -2275,6 +2291,7 @@ out_unregister_bus:
 	msm_bus_scale_unregister_client(host->bus_vote.client_handle);
 out_host_free:
 	devm_kfree(dev, host);
+out_variant_clear:
 	ufshcd_set_variant(hba, NULL);
 out:
 	/*
@@ -2295,6 +2312,7 @@ static void ufs_qcom_exit(struct ufs_hba *hba)
 	ufs_qcom_disable_lane_clks(host);
 	phy_power_off(host->generic_phy);
 	ufs_qcom_pm_qos_remove(host);
+	phy_exit(host->generic_phy);
 }
 
 static int ufs_qcom_set_dme_vs_core_clk_ctrl_clear_div(struct ufs_hba *hba,

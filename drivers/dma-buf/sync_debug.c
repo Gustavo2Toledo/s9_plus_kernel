@@ -78,6 +78,13 @@ static void sync_print_fence(struct seq_file *s,
 	int status;
 
 	status = fence_get_status_locked(fence);
+			     struct dma_fence *fence, bool show)
+{
+	int status = 1;
+	struct sync_timeline *parent = dma_fence_parent(fence);
+
+	if (dma_fence_is_signaled_locked(fence))
+		status = fence->status;
 
 	seq_printf(s, "  %s%sfence %s",
 		   show ? parent->name : "",
@@ -134,9 +141,10 @@ static void sync_print_sync_file(struct seq_file *s,
 
 	seq_printf(s, "[%p] %s: %s\n", sync_file, sync_file->name,
 		   sync_status_str(fence_get_status(sync_file->fence)));
+		   sync_status_str(!dma_fence_is_signaled(sync_file->fence)));
 
-	if (fence_is_array(sync_file->fence)) {
-		struct fence_array *array = to_fence_array(sync_file->fence);
+	if (dma_fence_is_array(sync_file->fence)) {
+		struct dma_fence_array *array = to_dma_fence_array(sync_file->fence);
 
 		for (i = 0; i < array->num_fences; ++i)
 			sync_print_fence(s, array->fences[i], true);

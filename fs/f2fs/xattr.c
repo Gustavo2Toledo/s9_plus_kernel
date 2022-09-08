@@ -107,6 +107,7 @@ static int f2fs_xattr_advise_set(const struct xattr_handler *handler,
 	new_advise |= old_advise & ~FADVISE_MODIFIABLE_BITS;
 
 	F2FS_I(inode)->i_advise = new_advise;
+	F2FS_I(inode)->i_advise |= *(char *)value;
 	f2fs_mark_inode_dirty_sync(inode, true);
 	return 0;
 }

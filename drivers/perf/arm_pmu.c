@@ -1185,6 +1185,9 @@ static int arm_pmu_hp_init(void)
 					USE_CPUHP_STR,
 					arm_perf_starting_cpu,
 					arm_perf_stopping_cpu);
+	ret = cpuhp_setup_state_multi(CPUHP_AP_PERF_ARM_STARTING,
+				      "perf/arm/pmu:starting",
+				      arm_perf_starting_cpu, NULL);
 	if (ret)
 		pr_err("CPU hotplug ARM PMU STOPPING registering failed: %d\n",
 		       ret);

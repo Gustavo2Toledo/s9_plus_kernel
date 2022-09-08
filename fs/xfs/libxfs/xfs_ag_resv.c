@@ -226,6 +226,7 @@ __xfs_ag_resv_init(
 	 */
 	if (pag->pag_agno == 0)
 		mp->m_ag_max_usable -= ask;
+	mp->m_ag_max_usable -= ask;
 
 	resv = xfs_perag_resv(pag, type);
 	resv->ar_asked = ask;

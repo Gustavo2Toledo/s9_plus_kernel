@@ -119,6 +119,7 @@ out_sem:
 
 	f2fs_balance_fs(sbi, dn.node_changed);
 
+out:
 	sb_end_pagefault(inode->i_sb);
 err:
 	return block_page_mkwrite_return(err);
@@ -301,6 +302,7 @@ sync_nodes:
 	}
 
 	if (f2fs_need_inode_block_update(sbi, ino)) {
+	if (need_inode_block_update(sbi, ino)) {
 		f2fs_mark_inode_dirty_sync(inode, true);
 		f2fs_write_inode(inode, NULL);
 		goto sync_nodes;
@@ -784,6 +786,7 @@ int f2fs_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
 	int err;
+	bool size_changed = false;
 
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(inode))))
 		return -EIO;
@@ -841,6 +844,14 @@ int f2fs_setattr(struct dentry *dentry, struct iattr *attr)
 		 */
 		up_write(&F2FS_I(inode)->i_mmap_sem);
 		up_write(&F2FS_I(inode)->i_gc_rwsem[WRITE]);
+			if (err)
+				return err;
+		} else {
+			/*
+			 * do not trim all blocks after i_size if target size is
+			 * larger than i_size.
+			 */
+			truncate_setsize(inode, attr->ia_size);
 
 		if (err)
 			return err;
@@ -858,6 +869,7 @@ int f2fs_setattr(struct dentry *dentry, struct iattr *attr)
 		down_write(&F2FS_I(inode)->i_sem);
 		F2FS_I(inode)->last_disk_size = i_size_read(inode);
 		up_write(&F2FS_I(inode)->i_sem);
+		size_changed = true;
 	}
 
 	__setattr_copy(inode, attr);
@@ -872,6 +884,7 @@ int f2fs_setattr(struct dentry *dentry, struct iattr *attr)
 
 	/* file size may changed here */
 	f2fs_mark_inode_dirty_sync(inode, true);
+	f2fs_mark_inode_dirty_sync(inode, size_changed);
 
 	/* inode change will produce dirty node pages flushed by checkpoint */
 	f2fs_balance_fs(F2FS_I_SB(inode), true);
@@ -1614,6 +1627,8 @@ static long f2fs_fallocate(struct file *file, int mode,
 	if (!ret) {
 		inode->i_mtime = inode->i_ctime = current_time(inode);
 		f2fs_mark_inode_dirty_sync(inode, false);
+		if (mode & FALLOC_FL_KEEP_SIZE)
+			file_set_keep_isize(inode);
 		f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);
 	}
 
@@ -1773,6 +1788,7 @@ static int f2fs_ioc_start_atomic_write(struct file *filp)
 	 */
 	if (get_dirty_pages(inode))
 		f2fs_msg(F2FS_I_SB(inode)->sb, KERN_WARNING,
+	f2fs_msg(F2FS_I_SB(inode)->sb, KERN_WARNING,
 		"Unexpected flush for atomic writes: ino=%lu, npages=%u",
 					inode->i_ino, get_dirty_pages(inode));
 	ret = filemap_write_and_wait_range(inode->i_mapping, 0, LLONG_MAX);
@@ -2191,6 +2207,7 @@ do_more:
 	range.start += BLKS_PER_SEC(sbi);
 	if (range.start <= end)
 		goto do_more;
+	ret = f2fs_gc(sbi, sync, true);
 out:
 	mnt_drop_write_file(filp);
 	return ret;
@@ -2889,6 +2906,15 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 		if (ret > 0)
 			f2fs_update_iostat(F2FS_I_SB(inode), APP_WRITE_IO, ret);
+		int err = f2fs_preallocate_blocks(iocb, from);
+
+		if (err) {
+			inode_unlock(inode);
+			return err;
+		}
+		blk_start_plug(&plug);
+		ret = __generic_file_write_iter(iocb, from);
+		blk_finish_plug(&plug);
 	}
 	inode_unlock(inode);
 out:

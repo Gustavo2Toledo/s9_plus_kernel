@@ -469,6 +469,16 @@ static void target_complete_nacl(struct kref *kref)
 	list_del_init(&nacl->acl_list);
 	mutex_unlock(&se_tpg->acl_node_mutex);
 
+
+	if (!nacl->dynamic_stop) {
+		complete(&nacl->acl_free_comp);
+		return;
+	}
+
+	mutex_lock(&se_tpg->acl_node_mutex);
+	list_del(&nacl->acl_list);
+	mutex_unlock(&se_tpg->acl_node_mutex);
+
 	core_tpg_wait_for_nacl_pr_ref(nacl);
 	core_free_device_list_for_node(nacl, se_tpg);
 	kfree(nacl);
@@ -539,6 +549,7 @@ void transport_free_session(struct se_session *se_sess)
 
 			if (se_nacl->dynamic_stop)
 				list_del_init(&se_nacl->acl_list);
+				list_del(&se_nacl->acl_list);
 		}
 		mutex_unlock(&se_tpg->acl_node_mutex);
 
@@ -1736,6 +1747,10 @@ void transport_generic_request_failure(struct se_cmd *cmd,
 	case TCM_LOGICAL_BLOCK_APP_TAG_CHECK_FAILED:
 	case TCM_LOGICAL_BLOCK_REF_TAG_CHECK_FAILED:
 	case TCM_COPY_TARGET_DEVICE_NOT_REACHABLE:
+	case TCM_TOO_MANY_TARGET_DESCS:
+	case TCM_UNSUPPORTED_TARGET_DESC_TYPE_CODE:
+	case TCM_TOO_MANY_SEGMENT_DESCS:
+	case TCM_UNSUPPORTED_SEGMENT_DESC_TYPE_CODE:
 		break;
 	case TCM_OUT_OF_RESOURCES:
 		sense_reason = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
@@ -2885,6 +2900,26 @@ static const struct sense_info sense_info_table[] = {
 	[TCM_INVALID_PARAMETER_LIST] = {
 		.key = ILLEGAL_REQUEST,
 		.asc = 0x26, /* INVALID FIELD IN PARAMETER LIST */
+	},
+	[TCM_TOO_MANY_TARGET_DESCS] = {
+		.key = ILLEGAL_REQUEST,
+		.asc = 0x26,
+		.ascq = 0x06, /* TOO MANY TARGET DESCRIPTORS */
+	},
+	[TCM_UNSUPPORTED_TARGET_DESC_TYPE_CODE] = {
+		.key = ILLEGAL_REQUEST,
+		.asc = 0x26,
+		.ascq = 0x07, /* UNSUPPORTED TARGET DESCRIPTOR TYPE CODE */
+	},
+	[TCM_TOO_MANY_SEGMENT_DESCS] = {
+		.key = ILLEGAL_REQUEST,
+		.asc = 0x26,
+		.ascq = 0x08, /* TOO MANY SEGMENT DESCRIPTORS */
+	},
+	[TCM_UNSUPPORTED_SEGMENT_DESC_TYPE_CODE] = {
+		.key = ILLEGAL_REQUEST,
+		.asc = 0x26,
+		.ascq = 0x09, /* UNSUPPORTED SEGMENT DESCRIPTOR TYPE CODE */
 	},
 	[TCM_PARAMETER_LIST_LENGTH_ERROR] = {
 		.key = ILLEGAL_REQUEST,

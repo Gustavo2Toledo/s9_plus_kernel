@@ -842,6 +842,10 @@ void kvm_free_stage2_pgd(struct kvm *kvm)
 	}
 	spin_unlock(&kvm->mmu_lock);
 
+	spin_lock(&kvm->mmu_lock);
+	unmap_stage2_range(kvm, 0, KVM_PHYS_SIZE);
+	spin_unlock(&kvm->mmu_lock);
+
 	/* Free the HW pgd, one page at a time */
 	if (pgd)
 		free_pages_exact(pgd, S2_PGD_SIZE);

@@ -600,5 +600,6 @@ source "drivers/crypto/chelsio/Kconfig"
 if ARCH_QCOM
 source drivers/crypto/msm/Kconfig
 endif # ARCH_QCOM
+source "drivers/crypto/virtio/Kconfig"
 
 endif # CRYPTO_HW

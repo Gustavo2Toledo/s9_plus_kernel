@@ -4,6 +4,7 @@
  * Interface to Linux SCSI midlayer.
  *
  * Copyright IBM Corp. 2002, 2018
+ * Copyright IBM Corp. 2002, 2016
  */
 
 #define KMSG_COMPONENT "zfcp"
@@ -312,6 +313,7 @@ static int zfcp_task_mgmt_function(struct scsi_cmnd *scpnt, u8 tm_flags)
 		retval = FAILED;
 	} else {
 		zfcp_dbf_scsi_devreset("okay", scpnt, tm_flags, fsf_req);
+		zfcp_dbf_scsi_devreset("okay", scpnt, tm_flags);
 		zfcp_scsi_forget_cmnds(zfcp_sdev, tm_flags);
 	}
 

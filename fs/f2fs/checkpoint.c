@@ -286,6 +286,7 @@ void f2fs_ra_meta_pages_cond(struct f2fs_sb_info *sbi, pgoff_t index)
 
 	if (readahead)
 		f2fs_ra_meta_pages(sbi, index, BIO_MAX_PAGES, META_POR, true);
+		ra_meta_pages(sbi, index, BIO_MAX_PAGES, META_POR, true);
 }
 
 static int __f2fs_write_meta_page(struct page *page,
@@ -946,6 +947,13 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	/* Sanity checking of checkpoint */
 	if (f2fs_sanity_check_ckpt(sbi))
 		goto free_fail_no_cp;
+	if (sanity_check_ckpt(sbi))
+		goto free_fail_no_cp;
+
+	if (cur_page == cp1)
+		sbi->cur_cp_pack = 1;
+	else
+		sbi->cur_cp_pack = 2;
 
 	if (cp_blks <= 1)
 		goto done;
@@ -1121,6 +1129,7 @@ int f2fs_sync_inode_meta(struct f2fs_sb_info *sbi)
 			/* it's on eviction */
 			if (is_inode_flag_set(inode, FI_DIRTY_INODE))
 				f2fs_update_inode_page(inode);
+				update_inode_page(inode);
 			iput(inode);
 		}
 	}
@@ -1259,6 +1268,8 @@ out:
 static void unblock_operations(struct f2fs_sb_info *sbi)
 {
 	up_write(&sbi->node_write);
+
+	build_free_nids(sbi, false);
 	f2fs_unlock_all(sbi);
 }
 
@@ -1632,6 +1643,13 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	else
 		f2fs_clear_prefree_segments(sbi, cpc);
 stop:
+	if (err) {
+		release_discard_addrs(sbi);
+	} else {
+		clear_prefree_segments(sbi, cpc);
+		f2fs_wait_all_discard_bio(sbi);
+	}
+
 	unblock_operations(sbi);
 	stat_inc_cp_count(sbi->stat_info);
 

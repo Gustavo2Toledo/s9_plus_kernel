@@ -81,6 +81,7 @@ ENTRY(ce_aes_ccm_auth_data)
 	adds	w7, w7, #1
 	bne	9b
 91:	eor	v0.16b, v0.16b, v1.16b
+	eor	v0.16b, v0.16b, v1.16b
 	st1	{v0.16b}, [x0]
 10:	str	w8, [x3]
 	ret

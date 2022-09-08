@@ -1409,6 +1409,9 @@ static int get_connect_authorizer(struct ceph_connection *con)
 	auth = con->ops->get_authorizer(con, &auth_proto, con->auth_retry);
 	if (IS_ERR(auth))
 		return PTR_ERR(auth);
+	auth = con->ops->get_authorizer(con, auth_proto, con->auth_retry);
+	if (IS_ERR(auth))
+		return auth;
 
 	con->auth = auth;
 	con->out_connect.authorizer_protocol = cpu_to_le32(auth_proto);
@@ -2069,6 +2072,16 @@ static int process_connect(struct ceph_connection *con)
 				con->error_msg = "bad authorize reply";
 				return ret;
 			}
+	if (con->auth_reply_buf) {
+		/*
+		 * Any connection that defines ->get_authorizer()
+		 * should also define ->verify_authorizer_reply().
+		 * See get_connect_authorizer().
+		 */
+		ret = con->ops->verify_authorizer_reply(con);
+		if (ret < 0) {
+			con->error_msg = "bad authorize reply";
+			return ret;
 		}
 	}
 

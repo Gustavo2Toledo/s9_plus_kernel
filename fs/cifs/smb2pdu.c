@@ -2039,6 +2039,8 @@ void smb2_reconnect_server(struct work_struct *work)
 			cifs_reopen_persistent_handles(tcon);
 		else
 			resched = true;
+		if (!smb2_reconnect(SMB2_INTERNAL_CMD, tcon))
+			cifs_reopen_persistent_handles(tcon);
 		list_del_init(&tcon->rlist);
 		cifs_put_tcon(tcon);
 	}

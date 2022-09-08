@@ -9,18 +9,15 @@
 
 #include <linux/fs.h>
 #include <linux/namei.h>
-#include <linux/pagemap.h>
 #include <linux/xattr.h>
-#include <linux/security.h>
 #include <linux/mount.h>
-#include <linux/slab.h>
 #include <linux/parser.h>
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/statfs.h>
 #include <linux/seq_file.h>
 #include <linux/posix_acl_xattr.h>
 #include "overlayfs.h"
+#include "ovl_entry.h"
 
 MODULE_AUTHOR("Miklos Szeredi <miklos@szeredi.hu>");
 MODULE_DESCRIPTION("Overlay filesystem");
@@ -48,21 +45,6 @@ struct ovl_fs {
 };
 
 struct ovl_dir_cache;
-
-/* private information held for every overlayfs dentry */
-struct ovl_entry {
-	struct dentry *__upperdentry;
-	struct ovl_dir_cache *cache;
-	union {
-		struct {
-			u64 version;
-			bool opaque;
-		};
-		struct rcu_head rcu;
-	};
-	unsigned numlower;
-	struct path lowerstack[];
-};
 
 #define OVL_MAX_STACK 500
 
@@ -292,6 +274,10 @@ static bool ovl_is_opaquedir(struct dentry *dentry)
 
 	return false;
 }
+static bool ovl_redirect_dir_def = IS_ENABLED(CONFIG_OVERLAY_FS_REDIRECT_DIR);
+module_param_named(redirect_dir, ovl_redirect_dir_def, bool, 0644);
+MODULE_PARM_DESC(ovl_redirect_dir_def,
+		 "Default to on or off for the redirect_dir feature");
 
 static void ovl_dentry_release(struct dentry *dentry)
 {
@@ -301,6 +287,7 @@ static void ovl_dentry_release(struct dentry *dentry)
 		unsigned int i;
 
 		dput(oe->__upperdentry);
+		kfree(oe->redirect);
 		for (i = 0; i < oe->numlower; i++)
 			dput(oe->lowerstack[i].dentry);
 		kfree_rcu(oe, rcu);
@@ -313,7 +300,7 @@ static struct dentry *ovl_d_real(struct dentry *dentry,
 {
 	struct dentry *real;
 
-	if (d_is_dir(dentry)) {
+	if (!d_is_reg(dentry)) {
 		if (!inode || inode == d_inode(dentry))
 			return dentry;
 		goto bug;
@@ -658,7 +645,7 @@ static int ovl_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 	err = vfs_statfs(&path, buf);
 	if (!err) {
-		buf->f_namelen = max(buf->f_namelen, ofs->lower_namelen);
+		buf->f_namelen = ofs->namelen;
 		buf->f_type = OVERLAYFS_SUPER_MAGIC;
 	}
 
@@ -691,6 +678,9 @@ static int ovl_show_options(struct seq_file *m, struct dentry *dentry)
 	if (ufs->config.override_creds != ovl_override_creds_def)
 		seq_show_option(m, "override_creds",
 				ufs->config.override_creds ? "on" : "off");
+	if (ufs->config.redirect_dir != ovl_redirect_dir_def)
+		seq_printf(m, ",redirect_dir=%s",
+			   ufs->config.redirect_dir ? "on" : "off");
 	return 0;
 }
 
@@ -719,6 +709,8 @@ enum {
 	OPT_DEFAULT_PERMISSIONS,
 	OPT_OVERRIDE_CREDS_ON,
 	OPT_OVERRIDE_CREDS_OFF,
+	OPT_REDIRECT_DIR_ON,
+	OPT_REDIRECT_DIR_OFF,
 	OPT_ERR,
 };
 
@@ -729,6 +721,8 @@ static const match_table_t ovl_tokens = {
 	{OPT_DEFAULT_PERMISSIONS,	"default_permissions"},
 	{OPT_OVERRIDE_CREDS_ON,		"override_creds=on"},
 	{OPT_OVERRIDE_CREDS_OFF,	"override_creds=off"},
+	{OPT_REDIRECT_DIR_ON,		"redirect_dir=on"},
+	{OPT_REDIRECT_DIR_OFF,		"redirect_dir=off"},
 	{OPT_ERR,			NULL}
 };
 
@@ -800,6 +794,12 @@ static int ovl_parse_opt(char *opt, struct ovl_config *config)
 
 		case OPT_OVERRIDE_CREDS_OFF:
 			config->override_creds = false;
+		case OPT_REDIRECT_DIR_ON:
+			config->redirect_dir = true;
+			break;
+
+		case OPT_REDIRECT_DIR_OFF:
+			config->redirect_dir = false;
 			break;
 
 		default:
@@ -839,12 +839,9 @@ retry:
 			      strlen(OVL_WORKDIR_NAME));
 
 	if (!IS_ERR(work)) {
-		struct kstat stat = {
-			.mode = S_IFDIR | 0,
-		};
 		struct iattr attr = {
 			.ia_valid = ATTR_MODE,
-			.ia_mode = stat.mode,
+			.ia_mode = S_IFDIR | 0,
 		};
 
 		if (work->d_inode) {
@@ -858,7 +855,9 @@ retry:
 			goto retry;
 		}
 
-		err = ovl_create_real(dir, work, &stat, NULL, NULL, true);
+		err = ovl_create_real(dir, work,
+				      &(struct cattr){.mode = S_IFDIR | 0},
+				      NULL, true);
 		if (err)
 			goto out_dput;
 
@@ -933,7 +932,7 @@ static int ovl_mount_dir_noesc(const char *name, struct path *path)
 		pr_err("overlayfs: filesystem on '%s' not supported\n", name);
 		goto out_put;
 	}
-	if (!S_ISDIR(path->dentry->d_inode->i_mode)) {
+	if (!d_is_dir(path->dentry)) {
 		pr_err("overlayfs: '%s' not a directory\n", name);
 		goto out_put;
 	}
@@ -966,22 +965,33 @@ static int ovl_mount_dir(const char *name, struct path *path)
 	return err;
 }
 
-static int ovl_lower_dir(const char *name, struct path *path, long *namelen,
-			 int *stack_depth, bool *remote)
+static int ovl_check_namelen(struct path *path, struct ovl_fs *ofs,
+			     const char *name)
+{
+	struct kstatfs statfs;
+	int err = vfs_statfs(path, &statfs);
+
+	if (err)
+		pr_err("overlayfs: statfs failed on '%s'\n", name);
+	else
+		ofs->namelen = max(ofs->namelen, statfs.f_namelen);
+
+	return err;
+}
+
+static int ovl_lower_dir(const char *name, struct path *path,
+			 struct ovl_fs *ofs, int *stack_depth, bool *remote)
 {
 	int err;
-	struct kstatfs statfs;
 
 	err = ovl_mount_dir_noesc(name, path);
 	if (err)
 		goto out;
 
-	err = vfs_statfs(path, &statfs);
-	if (err) {
-		pr_err("overlayfs: statfs failed on '%s'\n", name);
+	err = ovl_check_namelen(path, ofs, name);
+	if (err)
 		goto out_put;
-	}
-	*namelen = max(*namelen, statfs.f_namelen);
+
 	*stack_depth = max(*stack_depth, path->mnt->mnt_sb->s_stack_depth);
 
 	if (ovl_dentry_remote(path->dentry))
@@ -1097,7 +1107,7 @@ static int ovl_own_xattr_get(const struct xattr_handler *handler,
 			     struct dentry *dentry, struct inode *inode,
 			     const char *name, void *buffer, size_t size)
 {
-	return -EPERM;
+	return -EOPNOTSUPP;
 }
 
 static int ovl_own_xattr_set(const struct xattr_handler *handler,
@@ -1105,7 +1115,7 @@ static int ovl_own_xattr_set(const struct xattr_handler *handler,
 			     const char *name, const void *value,
 			     size_t size, int flags)
 {
-	return -EPERM;
+	return -EOPNOTSUPP;
 }
 
 static int ovl_other_xattr_get(const struct xattr_handler *handler,
@@ -1184,6 +1194,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	if (!ufs)
 		goto out;
 
+	ufs->config.redirect_dir = ovl_redirect_dir_def;
 	err = ovl_parse_opt((char *) data, &ufs->config);
 	if (err)
 		goto out_free_config;
@@ -1213,6 +1224,10 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 			err = -EINVAL;
 			goto out_put_upperpath;
 		}
+
+		err = ovl_check_namelen(&upperpath, ufs, ufs->config.upperdir);
+		if (err)
+			goto out_put_upperpath;
 
 		err = ovl_mount_dir(ufs->config.workdir, &workpath);
 		if (err)
@@ -1245,15 +1260,16 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 		goto out_free_lowertmp;
 	}
 
+	err = -ENOMEM;
 	stack = kcalloc(stacklen, sizeof(struct path), GFP_KERNEL);
 	if (!stack)
 		goto out_free_lowertmp;
 
+	err = -EINVAL;
 	lower = lowertmp;
 	for (numlower = 0; numlower < stacklen; numlower++) {
-		err = ovl_lower_dir(lower, &stack[numlower],
-				    &ufs->lower_namelen, &sb->s_stack_depth,
-				    &remote);
+		err = ovl_lower_dir(lower, &stack[numlower], ufs,
+				    &sb->s_stack_depth, &remote);
 		if (err)
 			goto out_put_lowerpath;
 
@@ -1362,7 +1378,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_fs_info = ufs;
 	sb->s_flags |= MS_POSIXACL | MS_NOREMOTELOCK;
 
-	root_dentry = d_make_root(ovl_new_inode(sb, S_IFDIR));
+	root_dentry = d_make_root(ovl_new_inode(sb, S_IFDIR, 0));
 	if (!root_dentry)
 		goto out_free_oe;
 

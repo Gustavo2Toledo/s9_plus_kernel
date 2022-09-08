@@ -171,6 +171,12 @@ static inline void next_free_nid(struct f2fs_sb_info *sbi, nid_t *nid)
 		return;
 	}
 	fnid = list_first_entry(&nm_i->free_nid_list, struct free_nid, list);
+	if (nm_i->nid_cnt[FREE_NID_LIST] <= 0) {
+		spin_unlock(&nm_i->nid_list_lock);
+		return;
+	}
+	fnid = list_entry(nm_i->nid_list[FREE_NID_LIST].next,
+						struct free_nid, list);
 	*nid = fnid->nid;
 	spin_unlock(&nm_i->nid_list_lock);
 }
@@ -315,6 +321,11 @@ static inline bool is_recoverable_dnode(struct page *page)
 	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG))
 		cp_ver |= (cur_cp_crc(ckpt) << 32);
 
+	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG)) {
+		__u64 crc = le32_to_cpu(*((__le32 *)
+				((unsigned char *)ckpt + crc_offset)));
+		cp_ver |= (crc << 32);
+	}
 	return cp_ver == cpver_of_node(page);
 }
 

@@ -34,7 +34,7 @@ TRACE_DEFINE_ENUM(LFS);
 TRACE_DEFINE_ENUM(SSR);
 TRACE_DEFINE_ENUM(__REQ_RAHEAD);
 TRACE_DEFINE_ENUM(__REQ_SYNC);
-TRACE_DEFINE_ENUM(__REQ_NOIDLE);
+TRACE_DEFINE_ENUM(__REQ_IDLE);
 TRACE_DEFINE_ENUM(__REQ_PREFLUSH);
 TRACE_DEFINE_ENUM(__REQ_FUA);
 TRACE_DEFINE_ENUM(__REQ_PRIO);
@@ -62,6 +62,8 @@ TRACE_DEFINE_ENUM(CP_TRIMMED);
 #define F2FS_OP_FLAGS (REQ_RAHEAD | REQ_SYNC | REQ_META | REQ_PRIO |	\
 			REQ_PREFLUSH | REQ_FUA)
 #define F2FS_BIO_FLAG_MASK(t)	(t & F2FS_OP_FLAGS)
+#define F2FS_BIO_FLAG_MASK(t)	(t & (REQ_RAHEAD | REQ_PREFLUSH | REQ_FUA))
+#define F2FS_BIO_EXTRA_MASK(t)	(t & (REQ_META | REQ_PRIO))
 
 #define show_bio_type(op,op_flags)	show_bio_op(op),		\
 						show_bio_op_flags(op_flags)
@@ -88,6 +90,19 @@ TRACE_DEFINE_ENUM(CP_TRIMMED);
 		{ HOT,		"HOT" },				\
 		{ WARM,		"WARM" },				\
 		{ COLD,		"COLD" })
+	__print_symbolic(F2FS_BIO_FLAG_MASK(flags),			\
+		{ 0,			"WRITE" },			\
+		{ REQ_RAHEAD, 		"READAHEAD" },			\
+		{ REQ_SYNC, 		"REQ_SYNC" },			\
+		{ REQ_PREFLUSH,		"REQ_PREFLUSH" },		\
+		{ REQ_FUA,		"REQ_FUA" })
+
+#define show_bio_extra(type)						\
+	__print_symbolic(F2FS_BIO_EXTRA_MASK(type),			\
+		{ REQ_META, 		"(M)" },			\
+		{ REQ_PRIO, 		"(P)" },			\
+		{ REQ_META | REQ_PRIO,	"(MP)" },			\
+		{ 0, " \b" })
 
 #define show_data_type(type)						\
 	__print_symbolic(type,						\
@@ -1467,6 +1482,11 @@ TRACE_EVENT(f2fs_issue_reset_zone,
 	TP_PROTO(struct block_device *dev, block_t blkstart),
 
 	TP_ARGS(dev, blkstart),
+TRACE_EVENT(f2fs_issue_reset_zone,
+
+	TP_PROTO(struct super_block *sb, block_t blkstart),
+
+	TP_ARGS(sb, blkstart),
 
 	TP_STRUCT__entry(
 		__field(dev_t,	dev)
@@ -1475,11 +1495,13 @@ TRACE_EVENT(f2fs_issue_reset_zone,
 
 	TP_fast_assign(
 		__entry->dev	= dev->bd_dev;
+		__entry->dev	= sb->s_dev;
 		__entry->blkstart = blkstart;
 	),
 
 	TP_printk("dev = (%d,%d), reset zone at block = 0x%llx",
 		show_dev(__entry->dev),
+		show_dev(__entry),
 		(unsigned long long)__entry->blkstart)
 );
 

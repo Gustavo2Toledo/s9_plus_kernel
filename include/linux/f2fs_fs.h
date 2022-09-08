@@ -111,6 +111,7 @@ struct f2fs_super_block {
 	__u8 hot_ext_count;		/* # of hot file extension */
 	__u8 reserved[310];		/* valid reserved region */
 	__le32 crc;			/* checksum of superblock */
+	__u8 reserved[327];		/* valid reserved region */
 } __packed;
 
 /*

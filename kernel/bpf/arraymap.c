@@ -64,7 +64,7 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
-	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
+	if (attr->value_size > KMALLOC_MAX_SIZE)
 		/* if value_size is bigger, the user space won't be able to
 		 * access the elements.
 		 */
@@ -133,6 +133,13 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	if (percpu &&
 	    (elem_size > PCPU_MIN_UNIT_SIZE ||
 	     bpf_array_alloc_percpu(array))) {
+	if (!percpu)
+		goto out;
+
+	array_size += (u64) attr->max_entries * elem_size * num_possible_cpus();
+
+	if (array_size >= U32_MAX - PAGE_SIZE ||
+	    elem_size > PCPU_MIN_UNIT_SIZE || bpf_array_alloc_percpu(array)) {
 		bpf_map_area_free(array);
 		return ERR_PTR(-ENOMEM);
 	}

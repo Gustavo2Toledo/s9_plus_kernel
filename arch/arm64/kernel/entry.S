@@ -35,6 +35,8 @@
 #include <asm/ptrace.h>
 #include <asm/thread_info.h>
 #include <asm/uaccess.h>
+#include <asm/ptrace.h>
+#include <asm/thread_info.h>
 #include <asm/asm-uaccess.h>
 #include <asm/unistd.h>
 #include <asm/kernel-pgtable.h>
@@ -171,6 +173,10 @@ alternative_cb_end
 	ldr	x20, [tsk, #TSK_TI_ADDR_LIMIT]
 	str	x20, [sp, #S_ORIG_ADDR_LIMIT]
 	mov	x20, #USER_DS
+	/* Save the task's original addr_limit and set USER_DS (TASK_SIZE_64) */
+	ldr	x20, [tsk, #TSK_TI_ADDR_LIMIT]
+	str	x20, [sp, #S_ORIG_ADDR_LIMIT]
+	mov	x20, #TASK_SIZE_64
 	str	x20, [tsk, #TSK_TI_ADDR_LIMIT]
 	/* No need to reset PSTATE.UAO, hardware's already set it to 0 for us */
 #ifdef CONFIG_RKP_CFP_ROPP
@@ -197,6 +203,7 @@ alternative_else_nop_endif
 	.if	\el != 0
 	mrs	x21, ttbr0_el1
 	tst	x21, #TTBR_ASID_MASK		// Check for the reserved ASID
+	tst	x21, #0xffff << 48		// Check for the reserved ASID
 	orr	x23, x23, #PSR_PAN_BIT		// Set the emulated PAN in the saved SPSR
 	b.eq	1f				// TTBR0 access already disabled
 	and	x23, x23, #~PSR_PAN_BIT		// Clear the emulated PAN in the saved SPSR
@@ -260,6 +267,7 @@ alternative_else_nop_endif
 	.endif
 
 	__uaccess_ttbr0_enable x0, x1
+	__uaccess_ttbr0_enable x0
 
 	.if	\el == 0
 	/*
@@ -269,6 +277,7 @@ alternative_else_nop_endif
 	 * corruption).
 	 */
 	bl	post_ttbr_update_workaround
+	post_ttbr0_update_workaround
 	.endif
 1:
 	.if	\el != 0
@@ -340,7 +349,6 @@ alternative_insn eret, nop, ARM64_UNMAP_KERNEL_AT_EL0
 	eret
 	.endif
 	.endm
-
 	.macro	irq_stack_entry
 	mov	x19, sp			// preserve the original sp
 

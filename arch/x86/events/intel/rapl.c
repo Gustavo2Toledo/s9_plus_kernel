@@ -606,6 +606,7 @@ static int rapl_cpu_online(unsigned int cpu)
 
 		rapl_pmus->pmus[topology_logical_package_id(cpu)] = pmu;
 	}
+
 	/*
 	 * Check if there is an online cpu in the package which collects rapl
 	 * events already.
@@ -803,9 +804,8 @@ static int __init rapl_pmu_init(void)
 	/*
 	 * Install callbacks. Core will call them for each online cpu.
 	 */
-
 	ret = cpuhp_setup_state(CPUHP_AP_PERF_X86_RAPL_ONLINE,
-				"AP_PERF_X86_RAPL_ONLINE",
+				"perf/x86/rapl:online",
 				rapl_cpu_online, rapl_cpu_offline);
 	if (ret)
 		goto out;

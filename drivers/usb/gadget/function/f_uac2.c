@@ -1191,6 +1191,10 @@ afunc_bind(struct usb_configuration *cfg, struct usb_function *fn)
 			dev_err(dev, "%s:%d Error!\n", __func__, __LINE__);
 			return ret;
 		}
+	agdev->out_ep = usb_ep_autoconfig(gadget, &fs_epout_desc);
+	if (!agdev->out_ep) {
+		dev_err(dev, "%s:%d Error!\n", __func__, __LINE__);
+		return ret;
 	}
 
 	agdev->in_ep = usb_ep_autoconfig(gadget, &fs_epin_desc);

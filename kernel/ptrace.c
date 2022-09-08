@@ -76,6 +76,12 @@ void __ptrace_link(struct task_struct *child, struct task_struct *new_parent,
 static void ptrace_link(struct task_struct *child, struct task_struct *new_parent)
 {
 	__ptrace_link(child, new_parent, current_cred());
+	BUG_ON(!list_empty(&child->ptrace_entry));
+	list_add(&child->ptrace_entry, &new_parent->ptraced);
+	child->parent = new_parent;
+	rcu_read_lock();
+	child->ptracer_cred = get_cred(__task_cred(new_parent));
+	rcu_read_unlock();
 }
 
 /**

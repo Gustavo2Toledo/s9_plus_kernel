@@ -99,6 +99,10 @@
 
 #define SO_CNX_ADVICE		53
 
+<<<<<<< HEAD
 #define SO_COOKIE		57
+=======
+#define SCM_TIMESTAMPING_OPT_STATS	54
+>>>>>>> 58ef501666b4a161a3ac1fee7190bbf3541ab349
 
 #endif /* _ASM_IA64_SOCKET_H */

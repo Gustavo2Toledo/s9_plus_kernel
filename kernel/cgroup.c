@@ -5439,6 +5439,9 @@ static struct cgroup *cgroup_create(struct cgroup *parent)
 	if (parent)
 		cgroup_bpf_inherit(cgrp, parent);
 
+	if (parent)
+		cgroup_bpf_inherit(cgrp, parent);
+
 	cgroup_propagate_control(cgrp);
 
 	return cgrp;

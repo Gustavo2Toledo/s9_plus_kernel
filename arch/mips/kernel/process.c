@@ -40,7 +40,7 @@
 #include <asm/mipsregs.h>
 #include <asm/processor.h>
 #include <asm/reg.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/elf.h>
 #include <asm/isadep.h>
@@ -213,6 +213,7 @@ static inline int is_ra_save_ins(union mips_instruction *ip, int *poff)
 				return 0;
 
 			*poff = ip->mm16_r5_format.imm;
+			*poff = ip->mm16_r5_format.simmediate;
 			*poff = (*poff << 2) / sizeof(ulong);
 			return 1;
 
@@ -347,6 +348,8 @@ static int get_frame_info(struct mips_frame_info *info)
 	union mips_instruction insn, *ip;
 	const unsigned int max_insns = 128;
 	unsigned int last_insn_size = 0;
+	union mips_instruction insn, *ip, *ip_end;
+	const unsigned int max_insns = 128;
 	unsigned int i;
 
 	info->pc_offset = -1;
@@ -370,6 +373,17 @@ static int get_frame_info(struct mips_frame_info *info)
 		} else {
 			insn.word = ip->word;
 			last_insn_size = 4;
+	ip_end = (void *)ip + info->func_size;
+
+	for (i = 0; i < max_insns && ip < ip_end; i++, ip++) {
+		if (is_mmips && mm_insn_16bit(ip->halfword[0])) {
+			insn.halfword[0] = 0;
+			insn.halfword[1] = ip->halfword[0];
+		} else if (is_mmips) {
+			insn.halfword[0] = ip->halfword[1];
+			insn.halfword[1] = ip->halfword[0];
+		} else {
+			insn.word = ip->word;
 		}
 
 		if (is_jump_ins(&insn))

@@ -36,7 +36,7 @@ void nft_meta_get_eval(const struct nft_expr *expr,
 {
 	const struct nft_meta *priv = nft_expr_priv(expr);
 	const struct sk_buff *skb = pkt->skb;
-	const struct net_device *in = pkt->in, *out = pkt->out;
+	const struct net_device *in = nft_in(pkt), *out = nft_out(pkt);
 	struct sock *sk;
 	u32 *dest = &regs->data[priv->dreg];
 
@@ -49,6 +49,7 @@ void nft_meta_get_eval(const struct nft_expr *expr,
 		break;
 	case NFT_META_NFPROTO:
 		nft_reg_store8(dest, pkt->pf);
+		*dest = nft_pf(pkt);
 		break;
 	case NFT_META_L4PROTO:
 		if (!pkt->tprot_set)
@@ -143,7 +144,7 @@ void nft_meta_get_eval(const struct nft_expr *expr,
 			break;
 		}
 
-		switch (pkt->pf) {
+		switch (nft_pf(pkt)) {
 		case NFPROTO_IPV4:
 			if (ipv4_is_multicast(ip_hdr(skb)->daddr))
 				nft_reg_store8(dest, PACKET_MULTICAST);
@@ -337,6 +338,11 @@ int nft_meta_set_validate(const struct nft_ctx *ctx,
 		break;
 	case NFPROTO_NETDEV:
 		hooks = 1 << NF_NETDEV_INGRESS;
+		break;
+	case NFPROTO_IPV4:
+	case NFPROTO_IPV6:
+	case NFPROTO_INET:
+		hooks = 1 << NF_INET_PRE_ROUTING;
 		break;
 	default:
 		return -EOPNOTSUPP;

@@ -612,6 +612,11 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			acceptable = inet_csk(sk)->icsk_af_ops->conn_request(sk, skb) >= 0;
 			local_bh_enable();
 			rcu_read_unlock();
+			 * so we need to make sure to disable BH right there.
+			 */
+			local_bh_disable();
+			acceptable = inet_csk(sk)->icsk_af_ops->conn_request(sk, skb) >= 0;
+			local_bh_enable();
 			if (!acceptable)
 				return 1;
 			consume_skb(skb);

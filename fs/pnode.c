@@ -80,8 +80,7 @@ int get_dominating_id(struct mount *mnt, const struct path *root)
 
 static int do_make_slave(struct mount *mnt)
 {
-	struct mount *peer_mnt = mnt, *master = mnt->mnt_master;
-	struct mount *slave_mnt;
+	struct mount *master, *slave_mnt;
 
 	/*
 	 * slave 'mnt' to a peer mount that has the
@@ -116,17 +115,45 @@ static int do_make_slave(struct mount *mnt)
 		list_move(&mnt->mnt_slave, &master->mnt_slave_list);
 		list_splice(&mnt->mnt_slave_list, master->mnt_slave_list.prev);
 		INIT_LIST_HEAD(&mnt->mnt_slave_list);
-	} else {
-		struct list_head *p = &mnt->mnt_slave_list;
-		while (!list_empty(p)) {
-                        slave_mnt = list_first_entry(p,
-					struct mount, mnt_slave);
-			list_del_init(&slave_mnt->mnt_slave);
-			slave_mnt->mnt_master = NULL;
+	if (list_empty(&mnt->mnt_share)) {
+		if (IS_MNT_SHARED(mnt)) {
+			mnt_release_group_id(mnt);
+			CLEAR_MNT_SHARED(mnt);
 		}
+		master = mnt->mnt_master;
+		if (!master) {
+			struct list_head *p = &mnt->mnt_slave_list;
+			while (!list_empty(p)) {
+				slave_mnt = list_first_entry(p,
+						struct mount, mnt_slave);
+				list_del_init(&slave_mnt->mnt_slave);
+				slave_mnt->mnt_master = NULL;
+			}
+			return 0;
+		}
+	} else {
+		struct mount *m;
+		/*
+		 * slave 'mnt' to a peer mount that has the
+		 * same root dentry. If none is available then
+		 * slave it to anything that is available.
+		 */
+		for (m = master = next_peer(mnt); m != mnt; m = next_peer(m)) {
+			if (m->mnt.mnt_root == mnt->mnt.mnt_root) {
+				master = m;
+				break;
+			}
+		}
+		list_del_init(&mnt->mnt_share);
+		mnt->mnt_group_id = 0;
+		CLEAR_MNT_SHARED(mnt);
 	}
+	list_for_each_entry(slave_mnt, &mnt->mnt_slave_list, mnt_slave)
+		slave_mnt->mnt_master = master;
+	list_move(&mnt->mnt_slave, &master->mnt_slave_list);
+	list_splice(&mnt->mnt_slave_list, master->mnt_slave_list.prev);
+	INIT_LIST_HEAD(&mnt->mnt_slave_list);
 	mnt->mnt_master = master;
-	CLEAR_MNT_SHARED(mnt);
 	return 0;
 }
 
@@ -389,6 +416,7 @@ static struct mount *find_topper(struct mount *mnt)
 #else
 	if (child->mnt_mountpoint != mnt->mnt.mnt_root)
 #endif
+	if (child->mnt_mountpoint != mnt->mnt.mnt_root)
 		return NULL;
 
 	return child;
@@ -436,6 +464,7 @@ int propagate_mount_busy(struct mount *mnt, int refcnt)
 #else
 		child = __lookup_mnt(&m->mnt, mnt->mnt_mountpoint);
 #endif
+		child = __lookup_mnt(&m->mnt, mnt->mnt_mountpoint);
 		if (!child)
 			continue;
 
@@ -491,6 +520,21 @@ static void umount_one(struct mount *mnt, struct list_head *to_umount)
 	list_del_init(&mnt->mnt_child);
 	list_del_init(&mnt->mnt_umounting);
 	list_move_tail(&mnt->mnt_list, to_umount);
+	struct mount *parent = mnt->mnt_parent;
+	struct mount *m;
+
+	BUG_ON(parent == mnt);
+
+	for (m = propagation_next(parent, parent); m;
+			m = propagation_next(m, parent)) {
+		struct mount *child = __lookup_mnt(&m->mnt,
+						mnt->mnt_mountpoint);
+		if (!child || (child->mnt.mnt_flags & MNT_UMOUNT))
+			continue;
+		if (!IS_MNT_LOCKED(child) || IS_MNT_MARKED(m)) {
+			SET_MNT_MARK(child);
+		}
+	}
 }
 
 /*
@@ -562,6 +606,31 @@ static void umount_list(struct list_head *to_umount,
 				list_move_tail(&child->mnt_umounting, to_restore);
 			else
 				umount_one(child, to_umount);
+	for (m = propagation_next(parent, parent); m;
+			m = propagation_next(m, parent)) {
+		struct mount *topper;
+		struct mount *child = __lookup_mnt(&m->mnt,
+						mnt->mnt_mountpoint);
+		/*
+		 * umount the child only if the child has no children
+		 * and the child is marked safe to unmount.
+		 */
+		if (!child || !IS_MNT_MARKED(child))
+			continue;
+		CLEAR_MNT_MARK(child);
+
+		/* If there is exactly one mount covering all of child
+		 * replace child with that mount.
+		 */
+		topper = find_topper(child);
+		if (topper)
+			mnt_change_mountpoint(child->mnt_parent, child->mnt_mp,
+					      topper);
+
+		if (list_empty(&child->mnt_mounts)) {
+			list_del_init(&child->mnt_child);
+			child->mnt.mnt_flags |= MNT_UMOUNT;
+			list_move_tail(&child->mnt_list, &mnt->mnt_list);
 		}
 	}
 }

@@ -483,6 +483,8 @@ readit:
 			ra->size = max_pages;
 			ra->async_size = max_pages >> 1;
 		}
+		ra->async_size = get_next_ra_size(ra, max_pages);
+		ra->size += ra->async_size;
 	}
 
 	return ra_submit(ra, mapping, filp);

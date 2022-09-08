@@ -843,8 +843,6 @@ static int c4iw_rdev_open(struct c4iw_rdev *rdev)
 		if (rdev->wr_log) {
 			rdev->wr_log_size = 1 << c4iw_wr_log_size_order;
 			atomic_set(&rdev->wr_log_idx, 0);
-		} else {
-			pr_err(MOD "error allocating wr_log. Logging disabled\n");
 		}
 	}
 
@@ -877,6 +875,7 @@ destroy_resource:
 
 static void c4iw_rdev_close(struct c4iw_rdev *rdev)
 {
+	destroy_workqueue(rdev->free_workq);
 	kfree(rdev->wr_log);
 	free_page((unsigned long)rdev->status_page);
 	c4iw_pblpool_destroy(rdev);
@@ -1442,8 +1441,6 @@ static void recover_queues(struct uld_ctx *ctx)
 
 	qp_list.qps = kzalloc(count * sizeof *qp_list.qps, GFP_ATOMIC);
 	if (!qp_list.qps) {
-		printk(KERN_ERR MOD "%s: Fatal error - DB overflow recovery failed\n",
-		       pci_name(ctx->lldi.pdev));
 		spin_unlock_irq(&ctx->dev->lock);
 		return;
 	}
@@ -1499,6 +1496,7 @@ static int c4iw_uld_control(void *handle, enum cxgb4_control control, ...)
 static struct cxgb4_uld_info c4iw_uld_info = {
 	.name = DRV_NAME,
 	.nrxq = MAX_ULD_QSETS,
+	.ntxq = MAX_ULD_QSETS,
 	.rxq_size = 511,
 	.ciq = true,
 	.lro = false,

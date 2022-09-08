@@ -3755,6 +3755,10 @@ static int perf_event_read(struct perf_event *event, bool group)
 			.ret = 0,
 		};
 
+		event_cpu = READ_ONCE(event->oncpu);
+		if ((unsigned)event_cpu >= nr_cpu_ids)
+			return 0;
+
 		preempt_disable();
 		event_cpu = __perf_event_read_cpu(event, event_cpu);
 
@@ -3770,6 +3774,7 @@ static int perf_event_read(struct perf_event *event, bool group)
 		 */
 		(void)smp_call_function_single(event_cpu,
 				__perf_event_read, &data, 1);
+		(void)smp_call_function_single(event_cpu, __perf_event_read, &data, 1);
 		preempt_enable();
 		ret = data.ret;
 	} else if (event->state == PERF_EVENT_STATE_INACTIVE ||
@@ -6966,7 +6971,7 @@ static bool perf_addr_filter_match(struct perf_addr_filter *filter,
 				     struct file *file, unsigned long offset,
 				     unsigned long size)
 {
-	if (filter->inode != file->f_inode)
+	if (filter->inode != file_inode(file))
 		return false;
 
 	if (filter->offset > offset + size)
@@ -8010,7 +8015,7 @@ static void bpf_overflow_handler(struct perf_event *event,
 	if (unlikely(__this_cpu_inc_return(bpf_prog_active) != 1))
 		goto out;
 	rcu_read_lock();
-	ret = BPF_PROG_RUN(event->prog, (void *)&ctx);
+	ret = BPF_PROG_RUN(event->prog, &ctx);
 	rcu_read_unlock();
 out:
 	__this_cpu_dec(bpf_prog_active);

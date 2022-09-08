@@ -20,6 +20,7 @@
 #include <linux/devfreq.h>
 #include <linux/thermal.h>
 
+
 /**
  * struct devfreq_cooling_power - Devfreq cooling power ops
  * @get_static_power:	Take voltage, in mV, and return the static power
@@ -35,8 +36,10 @@
  *			@dyn_power_coeff * frequency * voltage^2
  */
 struct devfreq_cooling_power {
-	unsigned long (*get_static_power)(unsigned long voltage);
-	unsigned long (*get_dynamic_power)(unsigned long freq,
+	unsigned long (*get_static_power)(struct devfreq *devfreq,
+					  unsigned long voltage);
+	unsigned long (*get_dynamic_power)(struct devfreq *devfreq,
+					   unsigned long freq,
 					   unsigned long voltage);
 	unsigned long dyn_power_coeff;
 };

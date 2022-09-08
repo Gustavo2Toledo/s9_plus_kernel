@@ -657,6 +657,11 @@ void flush_kernel_vmap_range(void *vaddr, int size)
 
 	flush_kernel_dcache_range_asm(start, end);
 	flush_tlb_kernel_range(start, end);
+
+	if ((unsigned long)size > parisc_cache_flush_threshold)
+		flush_data_cache();
+	else
+		flush_kernel_dcache_range_asm(start, start + size);
 }
 EXPORT_SYMBOL(flush_kernel_vmap_range);
 
@@ -674,5 +679,10 @@ void invalidate_kernel_vmap_range(void *vaddr, int size)
 
 	purge_kernel_dcache_range_asm(start, end);
 	flush_tlb_kernel_range(start, end);
+
+	if ((unsigned long)size > parisc_cache_flush_threshold)
+		flush_data_cache();
+	else
+		flush_kernel_dcache_range_asm(start, start + size);
 }
 EXPORT_SYMBOL(invalidate_kernel_vmap_range);

@@ -103,6 +103,7 @@ do_gc:
 
 		/* if return value is not zero, no victim was selected */
 		if (f2fs_gc(sbi, test_opt(sbi, FORCE_FG_GC), true, NULL_SEGNO))
+		if (f2fs_gc(sbi, test_opt(sbi, FORCE_FG_GC), true))
 			wait_ms = gc_th->no_gc_sleep_time;
 
 		trace_f2fs_background_gc(sbi->sb, wait_ms,
@@ -196,6 +197,7 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 	if (gc_type != FG_GC &&
 			(sbi->gc_mode != GC_URGENT) &&
 			p->max_search > sbi->max_victim_search)
+	if (gc_type != FG_GC && p->max_search > sbi->max_victim_search)
 		p->max_search = sbi->max_victim_search;
 
 	/* let's select beginning hot/small space first in no_heap mode*/
@@ -233,6 +235,10 @@ static unsigned int check_bg_victims(struct f2fs_sb_info *sbi)
 	for_each_set_bit(secno, dirty_i->victim_secmap, MAIN_SECS(sbi)) {
 		if (sec_usage_check(sbi, secno))
 			continue;
+
+		if (no_fggc_candidate(sbi, secno))
+			continue;
+
 		clear_bit(secno, dirty_i->victim_secmap);
 		return GET_SEG_FROM_SEC(sbi, secno);
 	}
@@ -382,6 +388,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		}
 
 		secno = GET_SEC_FROM_SEG(sbi, segno);
+		secno = GET_SECNO(sbi, segno);
 
 		if (sec_usage_check(sbi, secno))
 			goto next;
@@ -390,6 +397,9 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 					get_ckpt_valid_blocks(sbi, segno)))
 			goto next;
 		if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
+			goto next;
+		if (gc_type == FG_GC && p.alloc_mode == LFS &&
+					no_fggc_candidate(sbi, secno))
 			goto next;
 
 		cost = get_gc_cost(sbi, segno, &p);
@@ -719,6 +729,8 @@ put_page:
  */
 static int move_data_block(struct inode *inode, block_t bidx,
 				int gc_type, unsigned int segno, int off)
+static void move_encrypted_block(struct inode *inode, block_t bidx,
+							unsigned int segno, int off)
 {
 	struct f2fs_io_info fio = {
 		.sbi = F2FS_I_SB(inode),
@@ -761,6 +773,9 @@ static int move_data_block(struct inode *inode, block_t bidx,
 		err = -EAGAIN;
 		goto out;
 	}
+
+	if (!check_valid_map(F2FS_I_SB(inode), segno, off))
+		goto out;
 
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
 	err = f2fs_get_dnode_of_data(&dn, bidx, LOOKUP_NODE);
@@ -882,6 +897,7 @@ out:
 }
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
+static void move_data_page(struct inode *inode, block_t bidx, int gc_type,
 							unsigned int segno, int off)
 {
 	struct page *page;
@@ -908,6 +924,9 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 		err = -EAGAIN;
 		goto out;
 	}
+
+	if (!check_valid_map(F2FS_I_SB(inode), segno, off))
+		goto out;
 
 	if (gc_type == BG_GC) {
 		if (PageWriteback(page)) {
@@ -939,6 +958,10 @@ retry:
 		if (clear_page_dirty_for_io(page)) {
 			inode_dec_dirty_pages(inode);
 			f2fs_remove_dirty_inode(inode);
+		f2fs_wait_on_page_writeback(page, DATA, true);
+		if (clear_page_dirty_for_io(page)) {
+			inode_dec_dirty_pages(inode);
+			remove_dirty_inode(inode);
 		}
 
 		set_cold_data(page);
@@ -1081,7 +1104,7 @@ next_step:
 			}
 
 			start_bidx = f2fs_start_bidx_of_node(nofs, inode)
-								+ ofs_in_node;
+			
 			if (f2fs_post_read_required(inode))
 				err = move_data_block(inode, start_bidx,
 							gc_type, segno, off);
@@ -1092,6 +1115,10 @@ next_step:
 			if (!err && (gc_type == FG_GC ||
 					f2fs_post_read_required(inode)))
 				submitted++;
+			if (f2fs_encrypted_inode(inode) && S_ISREG(inode->i_mode))
+				move_encrypted_block(inode, start_bidx, segno, off);
+			else
+				move_data_page(inode, start_bidx, gc_type, segno, off);
 
 			if (locked) {
 				up_write(&fi->i_gc_rwsem[WRITE]);
@@ -1229,6 +1256,7 @@ skip:
 
 int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 			bool background, unsigned int segno)
+int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background)
 {
 	int gc_type = sync ? FG_GC : BG_GC;
 	int sec_freed = 0, seg_freed = 0, total_freed = 0;
@@ -1279,6 +1307,9 @@ gc_more:
 		}
 		if (has_not_enough_free_secs(sbi, 0, 0))
 			gc_type = FG_GC;
+	} else if (gc_type == BG_GC && !background) {
+		/* f2fs_balance_fs doesn't need to do BG_GC in critical path. */
+		goto stop;
 	}
 
 	/* f2fs_balance_fs doesn't need to do BG_GC in critical path. */
@@ -1351,6 +1382,8 @@ stop:
 
 void f2fs_build_gc_manager(struct f2fs_sb_info *sbi)
 {
+	u64 main_count, resv_count, ovp_count, blocks_per_sec;
+
 	DIRTY_I(sbi)->v_ops = &default_v_ops;
 
 	sbi->gc_pin_file_threshold = DEF_GC_FAILED_PINNED_FILES;
@@ -1359,4 +1392,12 @@ void f2fs_build_gc_manager(struct f2fs_sb_info *sbi)
 	if (f2fs_is_multi_device(sbi) && !__is_large_section(sbi))
 		SIT_I(sbi)->last_victim[ALLOC_NEXT] =
 				GET_SEGNO(sbi, FDEV(0).end_blk) + 1;
+	/* threshold of # of valid blocks in a section for victims of FG_GC */
+	main_count = SM_I(sbi)->main_segments << sbi->log_blocks_per_seg;
+	resv_count = SM_I(sbi)->reserved_segments << sbi->log_blocks_per_seg;
+	ovp_count = SM_I(sbi)->ovp_segments << sbi->log_blocks_per_seg;
+	blocks_per_sec = sbi->blocks_per_seg * sbi->segs_per_sec;
+
+	sbi->fggc_threshold = div_u64((main_count - ovp_count) * blocks_per_sec,
+					(main_count - resv_count));
 }

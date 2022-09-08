@@ -85,6 +85,7 @@ static DEFINE_PER_CPU(unsigned long, soft_lockup_hrtimer_cnt);
 static DEFINE_PER_CPU(struct task_struct *, softlockup_task_ptr_saved);
 DEFINE_PER_CPU(unsigned long, hrtimer_interrupts);
 DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved);
+static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved);
 static unsigned long soft_lockup_nmi_warn;
 
 unsigned int __read_mostly softlockup_panic =
@@ -255,6 +256,15 @@ void __weak watchdog_nmi_disable(unsigned int cpu)
 }
 
 void __weak watchdog_check_hardlockup_other_cpu(void)
+/*
+ * These two functions are mostly architecture specific
+ * defining them as weak here.
+ */
+int __weak watchdog_nmi_enable(unsigned int cpu)
+{
+	return 0;
+}
+void __weak watchdog_nmi_disable(unsigned int cpu)
 {
 }
 

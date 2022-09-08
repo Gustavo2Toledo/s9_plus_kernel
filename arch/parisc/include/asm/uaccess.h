@@ -124,7 +124,26 @@ struct exception_data {
 #define __get_user_asm(val, ldx, ptr)			\
 {							\
 	register long __gu_val;				\
-							\
+	
+#define __get_user(x, ptr)                               \
+({                                                       \
+	register long __gu_err __asm__ ("r8") = 0;       \
+	register long __gu_val;				 \
+							 \
+	load_sr2();					 \
+	switch (sizeof(*(ptr))) {			 \
+	    case 1: __get_user_asm("ldb", ptr); break;   \
+	    case 2: __get_user_asm("ldh", ptr); break;   \
+	    case 4: __get_user_asm("ldw", ptr); break;   \
+	    case 8: LDD_USER(ptr);  break;		 \
+	    default: BUILD_BUG(); break;		 \
+	}                                                \
+							 \
+	(x) = (__force __typeof__(*(ptr))) __gu_val;	 \
+	__gu_err;                                        \
+})
+
+#define __get_user_asm(ldx, ptr)                        \
 	__asm__("1: " ldx " 0(%%sr2,%2),%0\n"		\
 		"9:\n"					\
 		ASM_EXCEPTIONTABLE_ENTRY_EFAULT(1b, 9b)	\
@@ -143,6 +162,11 @@ struct exception_data {
 		__typeof__(*(ptr))	t;		\
 	} __gu_tmp;					\
 							\
+		: "r"(ptr), "1"(__gu_err));
+
+#if !defined(CONFIG_64BIT)
+
+#define __get_user_asm64(ptr) 				\
 	__asm__("   copy %%r0,%R0\n"			\
 		"1: ldw 0(%%sr2,%2),%0\n"		\
 		"2: ldw 4(%%sr2,%2),%R0\n"		\
@@ -154,6 +178,8 @@ struct exception_data {
 							\
 	(val) = __gu_tmp.t;				\
 }
+		: "=r"(__gu_val), "=r"(__gu_err)	\
+		: "r"(ptr), "1"(__gu_err));
 
 #endif /* !defined(CONFIG_64BIT) */
 

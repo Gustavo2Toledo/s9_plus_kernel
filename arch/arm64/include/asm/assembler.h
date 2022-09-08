@@ -283,6 +283,7 @@ alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 alternative_else
 	mrs	\tmp, tpidr_el2
 alternative_endif
+	mrs	\tmp, tpidr_el1
 	add	\dst, \dst, \tmp
 	.endm
 
@@ -298,6 +299,7 @@ alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 alternative_else
 	mrs	\tmp, tpidr_el2
 alternative_endif
+	mrs	\tmp, tpidr_el1
 	ldr	\dst, [\dst, \tmp]
 	.endm
 
@@ -532,6 +534,16 @@ alternative_endif
 
 	.macro	pte_to_phys, phys, pte
 	and	\phys, \pte, #(((1 << (48 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+ * Errata workaround post TTBR0_EL1 update.
+ */
+	.macro	post_ttbr0_update_workaround
+#ifdef CONFIG_CAVIUM_ERRATUM_27456
+alternative_if ARM64_WORKAROUND_CAVIUM_27456
+	ic	iallu
+	dsb	nsh
+	isb
+alternative_else_nop_endif
+#endif
 	.endm
 
 #endif	/* __ASM_ASSEMBLER_H */

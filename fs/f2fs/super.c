@@ -418,6 +418,17 @@ static int parse_options(struct super_block *sb, char *options)
 			break;
 		case Opt_nodiscard:
 			if (f2fs_sb_has_blkzoned(sbi)) {
+			q = bdev_get_queue(sb->s_bdev);
+			if (blk_queue_discard(q)) {
+				set_opt(sbi, DISCARD);
+			} else if (!f2fs_sb_mounted_blkzoned(sb)) {
+				f2fs_msg(sb, KERN_WARNING,
+					"mounting with \"discard\" option, but "
+					"the device does not support discard");
+			}
+			break;
+		case Opt_nodiscard:
+			if (f2fs_sb_mounted_blkzoned(sb)) {
 				f2fs_msg(sb, KERN_WARNING,
 					"discard is required for zoned block devices");
 				return -EINVAL;
@@ -571,6 +582,11 @@ static int parse_options(struct super_block *sb, char *options)
 						 "adaptive mode is not allowed with "
 						 "zoned block device feature");
 					kvfree(name);
+				if (f2fs_sb_mounted_blkzoned(sb)) {
+					f2fs_msg(sb, KERN_WARNING,
+						 "adaptive mode is not allowed with "
+						 "zoned block device feature");
+					kfree(name);
 					return -EINVAL;
 				}
 				set_opt_mode(sbi, F2FS_MOUNT_ADAPTIVE);
@@ -878,6 +894,8 @@ static struct inode *f2fs_alloc_inode(struct super_block *sb)
 	   it will be reinitialize after a reboot.*/
 	fi->vfs_inode.i_version = 1;
 	atomic_set(&fi->dirty_pages, 0);
+	fi->i_current_depth = 1;
+	fi->i_advise = 0;
 	init_rwsem(&fi->i_sem);
 	INIT_LIST_HEAD(&fi->dirty_list);
 	INIT_LIST_HEAD(&fi->gdirty_list);
@@ -1027,6 +1045,20 @@ static void destroy_device_list(struct f2fs_sb_info *sbi)
 	for (i = 0; i < sbi->s_ndevs; i++) {
 		blkdev_put(FDEV(i).bdev, FMODE_EXCL);
 #ifdef CONFIG_BLK_DEV_ZONED
+		kfree(FDEV(i).blkz_type);
+#endif
+	}
+	kfree(sbi->devs);
+}
+
+static void f2fs_put_super(struct super_block *sb)
+>>>>>>> 58ef501666b4a161a3ac1fee7190bbf3541ab349
+{
+	int i;
+
+	for (i = 0; i < sbi->s_ndevs; i++) {
+		blkdev_put(FDEV(i).bdev, FMODE_EXCL);
+#ifdef CONFIG_BLK_DEV_ZONED
 		kvfree(FDEV(i).blkz_seq);
 #endif
 	}
@@ -1073,6 +1105,7 @@ static void f2fs_put_super(struct super_block *sb)
 	 * In addition, EIO will skip do checkpoint, we need this as well.
 	 */
 	f2fs_release_ino_entry(sbi, true);
+	release_ino_entry(sbi, true);
 
 	f2fs_leave_shrinker(sbi);
 	mutex_unlock(&sbi->umount_mutex);
@@ -1115,6 +1148,7 @@ static void f2fs_put_super(struct super_block *sb)
 	for (i = 0; i < MAXQUOTAS; i++)
 		kvfree(F2FS_OPTION(sbi).s_qf_names[i]);
 #endif
+
 	destroy_percpu_info(sbi);
 	for (i = 0; i < NR_PAGE_TYPE; i++)
 		kvfree(sbi->write_io[i]);
@@ -1254,6 +1288,9 @@ static int f2fs_statfs(struct dentry *dentry, struct kstatfs *buf)
 		buf->f_ffree = min(avail_node_count - valid_node_count(sbi),
 					buf->f_bavail);
 	}
+	buf->f_files = sbi->total_node_count - F2FS_RESERVED_NODE_NUM;
+	buf->f_ffree = min(buf->f_files - valid_node_count(sbi),
+							buf->f_bavail);
 
 	buf->f_namelen = F2FS_NAME_LEN;
 	buf->f_fsid.val[0] = (u32)id;
@@ -1451,6 +1488,7 @@ static void default_options(struct f2fs_sb_info *sbi)
 	set_opt(sbi, FLUSH_MERGE);
 	set_opt(sbi, DISCARD);
 	if (f2fs_sb_has_blkzoned(sbi))
+	if (f2fs_sb_mounted_blkzoned(sbi->sb)) {
 		set_opt_mode(sbi, F2FS_MOUNT_LFS);
 	else
 		set_opt_mode(sbi, F2FS_MOUNT_ADAPTIVE);
@@ -1681,6 +1719,9 @@ static int f2fs_remount(struct super_block *sb, int *flags, char *data)
 		f2fs_destroy_flush_cmd_control(sbi, false);
 	} else {
 		err = f2fs_create_flush_cmd_control(sbi);
+		destroy_flush_cmd_control(sbi, false);
+	} else {
+		err = create_flush_cmd_control(sbi);
 		if (err)
 			goto restore_gc;
 	}
@@ -2322,6 +2363,7 @@ static int __f2fs_commit_super(struct buffer_head *bh,
 
 	/* it's rare case, we can do fua all the time */
 	return __sync_dirty_buffer(bh, REQ_SYNC | REQ_PREFLUSH | REQ_FUA);
+	return __sync_dirty_buffer(bh, REQ_PREFLUSH | REQ_FUA);
 }
 
 static inline bool sanity_check_area_boundary(struct f2fs_sb_info *sbi,
@@ -2873,6 +2915,71 @@ static int init_blkz_info(struct f2fs_sb_info *sbi, int devi)
 }
 #endif
 
+#ifdef CONFIG_BLK_DEV_ZONED
+static int init_blkz_info(struct f2fs_sb_info *sbi, int devi)
+{
+	struct block_device *bdev = FDEV(devi).bdev;
+	sector_t nr_sectors = bdev->bd_part->nr_sects;
+	sector_t sector = 0;
+	struct blk_zone *zones;
+	unsigned int i, nr_zones;
+	unsigned int n = 0;
+	int err = -EIO;
+
+	if (!f2fs_sb_mounted_blkzoned(sbi->sb))
+		return 0;
+
+	if (sbi->blocks_per_blkz && sbi->blocks_per_blkz !=
+				SECTOR_TO_BLOCK(bdev_zone_sectors(bdev)))
+		return -EINVAL;
+	sbi->blocks_per_blkz = SECTOR_TO_BLOCK(bdev_zone_sectors(bdev));
+	if (sbi->log_blocks_per_blkz && sbi->log_blocks_per_blkz !=
+				__ilog2_u32(sbi->blocks_per_blkz))
+		return -EINVAL;
+	sbi->log_blocks_per_blkz = __ilog2_u32(sbi->blocks_per_blkz);
+	FDEV(devi).nr_blkz = SECTOR_TO_BLOCK(nr_sectors) >>
+					sbi->log_blocks_per_blkz;
+	if (nr_sectors & (bdev_zone_sectors(bdev) - 1))
+		FDEV(devi).nr_blkz++;
+
+	FDEV(devi).blkz_type = kmalloc(FDEV(devi).nr_blkz, GFP_KERNEL);
+	if (!FDEV(devi).blkz_type)
+		return -ENOMEM;
+
+#define F2FS_REPORT_NR_ZONES   4096
+
+	zones = kcalloc(F2FS_REPORT_NR_ZONES, sizeof(struct blk_zone),
+			GFP_KERNEL);
+	if (!zones)
+		return -ENOMEM;
+
+	/* Get block zones type */
+	while (zones && sector < nr_sectors) {
+
+		nr_zones = F2FS_REPORT_NR_ZONES;
+		err = blkdev_report_zones(bdev, sector,
+					  zones, &nr_zones,
+					  GFP_KERNEL);
+		if (err)
+			break;
+		if (!nr_zones) {
+			err = -EIO;
+			break;
+		}
+
+		for (i = 0; i < nr_zones; i++) {
+			FDEV(devi).blkz_type[n] = zones[i].type;
+			sector += zones[i].len;
+			n++;
+		}
+	}
+
+	kfree(zones);
+
+	return err;
+}
+#endif
+
 /*
  * Read f2fs raw super block.
  * Because we have two copies of super block, so read both of them
@@ -2988,6 +3095,9 @@ static int f2fs_scan_devices(struct f2fs_sb_info *sbi)
 #else
 		return 0;
 #endif
+		if (!bdev_is_zoned(sbi->sb->s_bdev))
+			return 0;
+		max_devices = 1;
 	}
 
 	/*
@@ -2998,6 +3108,8 @@ static int f2fs_scan_devices(struct f2fs_sb_info *sbi)
 				 array_size(max_devices,
 					    sizeof(struct f2fs_dev_info)),
 				 GFP_KERNEL);
+	sbi->devs = kcalloc(max_devices, sizeof(struct f2fs_dev_info),
+				GFP_KERNEL);
 	if (!sbi->devs)
 		return -ENOMEM;
 
@@ -3040,6 +3152,7 @@ static int f2fs_scan_devices(struct f2fs_sb_info *sbi)
 #ifdef CONFIG_BLK_DEV_ZONED
 		if (bdev_zoned_model(FDEV(i).bdev) == BLK_ZONED_HM &&
 				!f2fs_sb_has_blkzoned(sbi)) {
+				!f2fs_sb_mounted_blkzoned(sbi->sb)) {
 			f2fs_msg(sbi->sb, KERN_ERR,
 				"Zoned block device feature not enabled\n");
 			return -EINVAL;
@@ -3087,6 +3200,10 @@ static void f2fs_tuning_parameters(struct f2fs_sb_info *sbi)
 	sbi->readdir_ra = 1;
 }
 
+	return 0;
+}
+
+>>>>>>> 58ef501666b4a161a3ac1fee7190bbf3541ab349
 static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct f2fs_sb_info *sbi;
@@ -3150,6 +3267,9 @@ try_onemore:
 		f2fs_msg(sb, KERN_ERR,
 			 "Zoned block device support is not enabled");
 		err = -EOPNOTSUPP;
+	if (f2fs_sb_mounted_blkzoned(sb)) {
+		f2fs_msg(sb, KERN_ERR,
+			 "Zoned block device support is not enabled\n");
 		goto free_sb_buf;
 	}
 #endif
@@ -3500,6 +3620,16 @@ free_root_inode:
 free_node_inode:
 	f2fs_release_ino_entry(sbi, true);
 	truncate_inode_pages_final(NODE_MAPPING(sbi));
+	mutex_lock(&sbi->umount_mutex);
+	release_ino_entry(sbi, true);
+	f2fs_leave_shrinker(sbi);
+	/*
+	 * Some dirty meta pages can be produced by recover_orphan_inodes()
+	 * failed by EIO. Then, iput(node_inode) can trigger balance_fs_bg()
+	 * followed by write_checkpoint() through f2fs_write_node_pages(), which
+	 * falls into an infinite loop in sync_meta_pages().
+	 */
+	truncate_inode_pages_final(META_MAPPING(sbi));
 	iput(sbi->node_inode);
 	sbi->node_inode = NULL;
 free_stats:
@@ -3511,6 +3641,10 @@ free_sm:
 free_devices:
 	destroy_device_list(sbi);
 	kvfree(sbi->ckpt);
+	destroy_segment_manager(sbi);
+free_devices:
+	destroy_device_list(sbi);
+	kfree(sbi->ckpt);
 free_meta_inode:
 	make_bad_inode(sbi->meta_inode);
 	iput(sbi->meta_inode);

@@ -296,6 +296,7 @@ static bool wq_power_efficient = IS_ENABLED(CONFIG_WQ_POWER_EFFICIENT_DEFAULT);
 module_param_named(power_efficient, wq_power_efficient, bool, 0444);
 
 bool wq_online;				/* can kworkers be created yet? */
+static bool wq_online;			/* can kworkers be created yet? */
 
 static bool wq_numa_enabled;		/* unbound NUMA affinity enabled */
 
@@ -4093,6 +4094,7 @@ void destroy_workqueue(struct workqueue_struct *wq)
 		for (i = 0; i < WORK_NR_COLORS; i++) {
 			if (WARN_ON(pwq->nr_in_flight[i])) {
 				mutex_unlock(&wq->mutex);
+				show_workqueue_state();
 				return;
 			}
 		}
@@ -4101,6 +4103,7 @@ void destroy_workqueue(struct workqueue_struct *wq)
 		    WARN_ON(pwq->nr_active) ||
 		    WARN_ON(!list_empty(&pwq->delayed_works))) {
 			mutex_unlock(&wq->mutex);
+			show_workqueue_state();
 			return;
 		}
 	}
@@ -5575,8 +5578,6 @@ int __init workqueue_init_early(void)
 
 	pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
 
-	wq_numa_init();
-
 	/* initialize CPU pools */
 	for_each_possible_cpu(cpu) {
 		struct worker_pool *pool;
@@ -5648,6 +5649,32 @@ int __init workqueue_init(void)
 {
 	struct worker_pool *pool;
 	int cpu, bkt;
+
+	struct workqueue_struct *wq;
+	struct worker_pool *pool;
+	int cpu, bkt;
+
+	/*
+	 * It'd be simpler to initialize NUMA in workqueue_init_early() but
+	 * CPU to node mapping may not be available that early on some
+	 * archs such as power and arm64.  As per-cpu pools created
+	 * previously could be missing node hint and unbound pools NUMA
+	 * affinity, fix them up.
+	 */
+	wq_numa_init();
+
+	mutex_lock(&wq_pool_mutex);
+
+	for_each_possible_cpu(cpu) {
+		for_each_cpu_worker_pool(pool, cpu) {
+			pool->node = cpu_to_node(cpu);
+		}
+	}
+
+	list_for_each_entry(wq, &workqueues, list)
+		wq_update_unbound_numa(wq, smp_processor_id(), true);
+
+	mutex_unlock(&wq_pool_mutex);
 
 	/* create the initial workers */
 	for_each_online_cpu(cpu) {

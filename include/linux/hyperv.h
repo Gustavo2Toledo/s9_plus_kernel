@@ -711,7 +711,7 @@ enum vmbus_device_type {
 	HV_FCOPY,
 	HV_BACKUP,
 	HV_DM,
-	HV_UNKOWN,
+	HV_UNKNOWN,
 };
 
 struct vmbus_device {
@@ -1134,6 +1134,12 @@ struct hv_driver {
 
 	struct device_driver driver;
 
+	/* dynamic device GUID's */
+	struct  {
+		spinlock_t lock;
+		struct list_head list;
+	} dynids;
+
 	int (*probe)(struct hv_device *, const struct hv_vmbus_device_id *);
 	int (*remove)(struct hv_device *);
 	void (*shutdown)(struct hv_device *);
@@ -1526,6 +1532,21 @@ static inline  void hv_signal_on_read(struct vmbus_channel *channel)
 
 	cached_write_sz = hv_get_cached_bytes_to_write(rbi);
 	if (cached_write_sz <= pending_sz)
+		vmbus_setevent(channel);
+
+	return;
+}
+
+static inline void
+init_cached_read_index(struct vmbus_channel *channel)
+{
+	struct hv_ring_buffer_info *rbi = &channel->inbound;
+
+	if (cur_write_sz < pending_sz)
+		return;
+
+	cached_write_sz = hv_get_cached_bytes_to_write(rbi);
+	if (cached_write_sz < pending_sz)
 		vmbus_setevent(channel);
 
 	return;

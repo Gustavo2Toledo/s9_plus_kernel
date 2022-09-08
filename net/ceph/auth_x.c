@@ -104,6 +104,25 @@ static int ceph_x_decrypt(struct ceph_crypto_key *secret, void **p, void *end)
 
 	*p += ciphertext_len;
 	return ret;
+static int ceph_x_decrypt(struct ceph_crypto_key *secret, void **p, void *end)
+{
+	struct ceph_x_encrypt_header *hdr = *p + sizeof(u32);
+	int ciphertext_len, plaintext_len;
+	int ret;
+
+	ceph_decode_32_safe(p, end, ciphertext_len, e_inval);
+	ceph_decode_need(p, end, ciphertext_len, e_inval);
+
+	ret = ceph_crypt(secret, false, *p, end - *p, ciphertext_len,
+			 &plaintext_len);
+	if (ret)
+		return ret;
+
+	if (hdr->struct_v != 1 || le64_to_cpu(hdr->magic) != CEPHX_ENC_MAGIC)
+		return -EPERM;
+
+	*p += ciphertext_len;
+	return plaintext_len - sizeof(struct ceph_x_encrypt_header);
 
 e_inval:
 	return -EINVAL;
@@ -348,6 +367,7 @@ static int ceph_x_build_authorizer(struct ceph_auth_client *ac,
 	int maxlen;
 	struct ceph_x_authorize_a *msg_a;
 	struct ceph_x_authorize_b *msg_b;
+	void *p, *end;
 	int ret;
 	int ticket_blob_len =
 		(th->ticket_blob ? th->ticket_blob->vec.iov_len : 0);
@@ -398,6 +418,21 @@ static int ceph_x_build_authorizer(struct ceph_auth_client *ac,
 		goto out_au;
 	}
 
+	p = msg_a + 1;
+	p += ticket_blob_len;
+	end = au->buf->vec.iov_base + au->buf->vec.iov_len;
+
+	msg_b = p + ceph_x_encrypt_offset();
+	msg_b->struct_v = 1;
+	get_random_bytes(&au->nonce, sizeof(au->nonce));
+	msg_b->nonce = cpu_to_le64(au->nonce);
+	ret = ceph_x_encrypt(&au->session_key, p, end - p, sizeof(*msg_b));
+	if (ret < 0)
+		goto out_au;
+
+	p += ret;
+	WARN_ON(p > end);
+	au->buf->vec.iov_len = p - au->buf->vec.iov_base;
 	dout(" built authorizer nonce %llx len %d\n", au->nonce,
 	     (int)au->buf->vec.iov_len);
 	return 0;
@@ -737,6 +772,8 @@ static int ceph_x_verify_authorizer_reply(struct ceph_auth_client *ac,
 		pr_err("bad size %d for ceph_x_authorize_reply\n", ret);
 		return -EINVAL;
 	}
+	if (ret != sizeof(*reply))
+		return -EPERM;
 
 	if (au->nonce + 1 != le64_to_cpu(reply->nonce_plus_one))
 		ret = -EPERM;
@@ -860,6 +897,26 @@ static int calc_signature(struct ceph_x_authorizer *au, struct ceph_msg *msg,
 		*psig = penc->a ^ penc->b ^ penc->c ^ penc->d;
 	}
 
+	struct {
+		__le32 len;
+		__le32 header_crc;
+		__le32 front_crc;
+		__le32 middle_crc;
+		__le32 data_crc;
+	} __packed *sigblock = enc_buf + ceph_x_encrypt_offset();
+	int ret;
+
+	sigblock->len = cpu_to_le32(4*sizeof(u32));
+	sigblock->header_crc = msg->hdr.crc;
+	sigblock->front_crc = msg->footer.front_crc;
+	sigblock->middle_crc = msg->footer.middle_crc;
+	sigblock->data_crc =  msg->footer.data_crc;
+	ret = ceph_x_encrypt(&au->session_key, enc_buf, CEPHX_AU_ENC_BUF_LEN,
+			     sizeof(*sigblock));
+	if (ret < 0)
+		return ret;
+
+	*psig = *(__le64 *)(enc_buf + sizeof(u32));
 	return 0;
 }
 

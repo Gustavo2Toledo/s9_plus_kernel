@@ -612,6 +612,17 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 	check_object_size(from, n, true);
 
+{
+	check_object_size(from, n, true);
+
+	return __arch_copy_to_user(to, from, n);
+}
+
+static inline unsigned long __must_check
+copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+	check_object_size(from, n, true);
+
 	if (access_ok(VERIFY_WRITE, to, n))
 		n = __arch_copy_to_user(to, from, n);
 	return n;
